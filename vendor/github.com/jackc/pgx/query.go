@@ -69,6 +69,25 @@ func (rows *Rows) Close() {
 		return
 	}
 
+	// If there is no error and a batch operation is not in progress read until we get the ReadyForQuery message or the
+	// ErrorResponse. This is necessary to detect a deferred constraint violation where the ErrorResponse is sent after
+	// CommandComplete.
+	if rows.err == nil && rows.batch == nil && rows.conn.pendingReadyForQueryCount == 1 {
+		for rows.conn.pendingReadyForQueryCount > 0 {
+			msg, err := rows.conn.rxMsg()
+			if err != nil {
+				rows.err = err
+				break
+			}
+
+			err = rows.conn.processContextFreeMsg(msg)
+			if err != nil {
+				rows.err = err
+				break
+			}
+		}
+	}
+
 	if rows.unlockConn {
 		rows.conn.unlock()
 		rows.unlockConn = false
@@ -293,8 +312,8 @@ func (rows *Rows) Values() ([]interface{}, error) {
 
 			switch fd.FormatCode {
 			case TextFormatCode:
-				decoder := value.(pgtype.TextDecoder)
-				if decoder == nil {
+				decoder, ok := value.(pgtype.TextDecoder)
+				if !ok {
 					decoder = &pgtype.GenericText{}
 				}
 				err := decoder.DecodeText(rows.conn.ConnInfo, buf)
@@ -303,8 +322,8 @@ func (rows *Rows) Values() ([]interface{}, error) {
 				}
 				values = append(values, decoder.(pgtype.Value).Get())
 			case BinaryFormatCode:
-				decoder := value.(pgtype.BinaryDecoder)
-				if decoder == nil {
+				decoder, ok := value.(pgtype.BinaryDecoder)
+				if !ok {
 					decoder = &pgtype.GenericBinary{}
 				}
 				err := decoder.DecodeBinary(rows.conn.ConnInfo, buf)
