@@ -1,8 +1,6 @@
 ### 依赖安装
-
 ```
 go mod tidy
-go mod vendor
 ```
 
 ```
@@ -14,14 +12,19 @@ go install \
 go get -u github.com/gobuffalo/packr/...
 ```
 
+更新数据库文件
+```
+nakama.exe migrate up --database.address "go_admin:111111@192.168.3.22:26257/mahjong"
+```
+
+### 启动服务
+```
+
+```
+
 ### 编译二进制
 ```
 go build -trimpath -mod=vendor
 //查看版本
 ./nakama --version
-```
-
-更新数据库文件
-```
-nakama.exe migrate up --database.address "go_admin:111111@192.168.3.22:26257/mahjong"
 ```
