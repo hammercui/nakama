@@ -1,0 +1,50 @@
+name: mahjong
+data_dir: "./data/"
+
+logger:
+  level: "debug"
+  file: "logfile.log"
+  max_age: 30
+  max_backups: 30
+  max_size: 20
+
+database:
+  address:
+    - "go_admin:111111@192.168.3.22:26257/mahjong"
+  conn_max_lifetime_ms: 0
+  max_open_conns: 0
+  max_idle_conns: 100
+
+runtime:
+  env:
+    - "example_apikey=example_apivalue"
+    - "encryptionkey=afefa==e332*u13=971mldq"
+  path: "/modules"
+  http_key: "defaulthttpkey"
+
+socket:
+  server_key: "defaultkey"
+  port: 7350
+  max_message_size_bytes: 4096 # bytes
+  read_timeout_ms: 10000
+  write_timeout_ms: 10000
+  idle_timeout_ms: 60000
+  write_wait_ms: 5000
+  pong_wait_ms: 10000
+  ping_period_ms: 8000 # Must be less than pong_wait_ms
+  outgoing_queue_size: 16
+
+session:
+  encryption_key: "defaultencryptionkey"
+  token_expiry_sec: 60
+
+social:
+  steam:
+  publisher_key: ""
+  app_id: 0
+
+console:
+  port: 7351
+  username: "admin"
+  password: "password"
+

@@ -31,7 +31,6 @@ go run main.go --database.address "go_admin:111111@192.168.3.22:26257/mahjong"
 
 ```
 
-
 ### 3 编译二进制
 ```
 go build -trimpath -mod=vendor
