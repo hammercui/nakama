@@ -14,7 +14,7 @@ go get -u github.com/gobuffalo/packr/...
 
 更新数据库文件
 ```
-nakama.exe migrate up --database.address "go_admin:111111@192.168.3.22:26257/mahjong"
+nakama.exe migrate up --database.address "go_admin:111111@192.168.2.20:26257/mahjong"
 ```
 
 安装console所需依赖
@@ -45,6 +45,7 @@ docker run --link=cockroachdb heroiclabs/nakama migrate up --database.address go
 docker run --link=cockroachdb --rm -p 7350:7350 -p 7351:7351 --name nakama heroiclabs/nakama --database.address go_admin:111111@cockroachdb:26257/mahjong
 ```
 ### 5 项目解析
+
 #### 端口分配
 * 7348：console模块grpc端口
 * 7351：console模块http端口
