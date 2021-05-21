@@ -18,6 +18,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/ptypes/timestamp"
 	"github.com/golang/protobuf/ptypes/wrappers"
@@ -25,7 +26,6 @@ import (
 	"github.com/heroiclabs/nakama/v3/console"
 	"github.com/jackc/pgx"
 	"github.com/jackc/pgx/pgtype"
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -102,7 +102,7 @@ WHERE u.id = $1`
 
 	online := false
 	if tracker != nil {
-		online = tracker.StreamExists(PresenceStream{Mode: StreamModeNotifications, Subject: userID})
+		online = tracker.StreamExists(PresenceStream{Mode: StreamModeStatus, Subject: userID})
 	}
 
 	return &api.Account{
@@ -204,7 +204,7 @@ WHERE u.id IN (` + strings.Join(statements, ",") + `)`
 
 		online := false
 		if tracker != nil {
-			online = tracker.StreamExists(PresenceStream{Mode: StreamModeNotifications, Subject: uuid.FromStringOrNil(userID)})
+			online = tracker.StreamExists(PresenceStream{Mode: StreamModeStatus, Subject: uuid.FromStringOrNil(userID)})
 		}
 
 		accounts = append(accounts, &api.Account{
@@ -401,7 +401,7 @@ func ExportAccount(ctx context.Context, logger *zap.Logger, db *sql.DB, userID u
 		return nil, status.Error(codes.Internal, "An error occurred while trying to export user data.")
 	}
 
-	groups := make([]*api.Group, 0)
+	groups := make([]*api.Group, 0, 1)
 	groupUsers, err := ListUserGroups(ctx, logger, db, userID, 0, nil, "")
 	if err != nil {
 		logger.Error("Could not fetch groups that belong to the user", zap.Error(err), zap.String("user_id", userID.String()))

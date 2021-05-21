@@ -15,12 +15,13 @@
 package server
 
 import (
+	"strconv"
+	"strings"
+
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"go.uber.org/zap"
-	"strconv"
-	"strings"
 )
 
 func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *rtapi.Envelope) {
@@ -44,6 +45,10 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 			}}}, true)
 			return
 		}
+		if userID == session.UserID() {
+			// The user cannot follow themselves.
+			continue
+		}
 
 		uniqueUserIDs[userID] = struct{}{}
 	}
@@ -59,11 +64,23 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 			}}}, true)
 			return
 		}
+		if username == session.Username() {
+			// The user cannot follow themselves.
+			continue
+		}
 
 		uniqueUsernames[username] = struct{}{}
 	}
 
-	var followUserIDs map[uuid.UUID]struct{}
+	if len(uniqueUserIDs) == 0 && len(uniqueUsernames) == 0 {
+		session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Status{Status: &rtapi.Status{
+			Presences: make([]*rtapi.UserPresence, 0),
+		}}}, true)
+		return
+	}
+
+	followUserIDs := make(map[uuid.UUID]struct{}, len(uniqueUserIDs)+len(uniqueUsernames))
+	foundUsernames := make(map[string]struct{}, len(uniqueUsernames))
 	if len(uniqueUsernames) == 0 {
 		params := make([]interface{}, 0, len(uniqueUserIDs))
 		statements := make([]string, 0, len(uniqueUserIDs))
@@ -73,9 +90,8 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 		}
 
 		// See if all the users exist.
-		query := "SELECT COUNT(id) FROM users WHERE id IN (" + strings.Join(statements, ", ") + ")"
-		var dbCount int
-		err := p.db.QueryRowContext(session.Context(), query, params...).Scan(&dbCount)
+		query := "SELECT id FROM users WHERE id IN (" + strings.Join(statements, ", ") + ")"
+		rows, err := p.db.QueryContext(session.Context(), query, params...)
 		if err != nil {
 			logger.Error("Error checking users in status follow", zap.Error(err))
 			session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
@@ -84,19 +100,23 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 			}}}, true)
 			return
 		}
-
-		// If one or more users were missing reject the whole operation.
-		if dbCount != len(params) {
-			session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
-				Code:    int32(rtapi.Error_BAD_INPUT),
-				Message: "One or more users do not exist",
-			}}}, true)
-			return
+		for rows.Next() {
+			var id string
+			if err = rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				logger.Error("Error scanning users in status follow", zap.Error(err))
+				break
+			}
+			userID := uuid.FromStringOrNil(id)
+			if userID == uuid.Nil {
+				// Cannot follow the system user.
+				continue
+			}
+			followUserIDs[userID] = struct{}{}
 		}
-
-		followUserIDs = uniqueUserIDs
+		_ = rows.Close()
 	} else {
-		query := "SELECT id FROM users WHERE "
+		query := "SELECT id, username FROM users WHERE "
 
 		params := make([]interface{}, 0, len(uniqueUserIDs))
 		statements := make([]string, 0, len(uniqueUserIDs))
@@ -118,8 +138,6 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 		}
 		query += "username IN (" + strings.Join(statements, ", ") + ")"
 
-		followUserIDs = make(map[uuid.UUID]struct{}, len(uniqueUserIDs)+len(uniqueUsernames))
-
 		// See if all the users exist.
 		rows, err := p.db.QueryContext(session.Context(), query, params...)
 		if err != nil {
@@ -132,8 +150,8 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 		}
 		for rows.Next() {
 			var id string
-			err := rows.Scan(&id)
-			if err != nil {
+			var username string
+			if err := rows.Scan(&id, &username); err != nil {
 				_ = rows.Close()
 				logger.Error("Error scanning users in status follow", zap.Error(err))
 				session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
@@ -142,46 +160,46 @@ func (p *Pipeline) statusFollow(logger *zap.Logger, session Session, envelope *r
 				}}}, true)
 				return
 			}
-			uid, err := uuid.FromString(id)
-			if err != nil {
-				_ = rows.Close()
-				logger.Error("Error parsing users in status follow", zap.Error(err))
-				session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
-					Code:    int32(rtapi.Error_RUNTIME_EXCEPTION),
-					Message: "Could not check users",
-				}}}, true)
-				return
+
+			// Mark the username as found.
+			foundUsernames[username] = struct{}{}
+
+			userID := uuid.FromStringOrNil(id)
+			if userID == session.UserID() || userID == uuid.Nil {
+				// The user cannot follow themselves or the system user.
+				continue
 			}
 
-			followUserIDs[uid] = struct{}{}
+			followUserIDs[userID] = struct{}{}
 		}
 		_ = rows.Close()
+	}
 
-		// If one or more users were missing reject the whole operation.
-		// Note: any overlap between user IDs and usernames (pointing to the same user) will also fail here.
-		if len(followUserIDs) != len(uniqueUserIDs)+len(uniqueUsernames) {
-			session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
-				Code:    int32(rtapi.Error_BAD_INPUT),
-				Message: "One or more users do not exist",
-			}}}, true)
-			return
+	if l := len(uniqueUserIDs) + len(uniqueUsernames); len(followUserIDs) != l {
+		// There's a mismatch in what the user wanted to follow and what is actually possible to follow.
+		missingUserIDs := make([]string, 0, l)
+		missingUsernames := make([]string, 0, l)
+		for userID := range uniqueUserIDs {
+			if _, found := followUserIDs[userID]; !found {
+				missingUserIDs = append(missingUserIDs, userID.String())
+			}
+		}
+		for username := range uniqueUsernames {
+			if _, found := foundUsernames[username]; !found {
+				missingUsernames = append(missingUsernames, username)
+			}
+		}
+		if len(missingUserIDs) != 0 || len(missingUsernames) != 0 {
+			logger.Warn("Could not follow users, no user found", zap.Strings("user_ids", missingUserIDs), zap.Strings("usernames", missingUsernames))
 		}
 	}
 
 	// Follow all of the validated user IDs, and prepare a list of current presences to return.
+	p.statusRegistry.Follow(session.ID(), followUserIDs)
+
 	presences := make([]*rtapi.UserPresence, 0, len(followUserIDs))
 	for userID := range followUserIDs {
-		stream := PresenceStream{Mode: StreamModeStatus, Subject: userID}
-		success, _ := p.tracker.Track(session.ID(), stream, session.UserID(), PresenceMeta{Format: session.Format(), Username: session.Username(), Hidden: true}, false)
-		if !success {
-			session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
-				Code:    int32(rtapi.Error_RUNTIME_EXCEPTION),
-				Message: "Could not follow user status",
-			}}}, true)
-			return
-		}
-
-		ps := p.tracker.ListByStream(stream, false, true)
+		ps := p.tracker.ListByStream(PresenceStream{Mode: StreamModeStatus, Subject: userID}, false, true)
 		for _, p := range ps {
 			presences = append(presences, &rtapi.UserPresence{
 				UserId:    p.UserID.String(),
@@ -215,12 +233,14 @@ func (p *Pipeline) statusUnfollow(logger *zap.Logger, session Session, envelope 
 			}}}, true)
 			return
 		}
+		if userID == session.UserID() {
+			// The user cannot unfollow themselves.
+			continue
+		}
 		userIDs = append(userIDs, userID)
 	}
 
-	for _, userID := range userIDs {
-		p.tracker.Untrack(session.ID(), PresenceStream{Mode: StreamModeStatus, Subject: userID}, session.UserID())
-	}
+	p.statusRegistry.Unfollow(session.ID(), userIDs)
 
 	session.Send(&rtapi.Envelope{Cid: envelope.Cid}, true)
 }
@@ -243,7 +263,7 @@ func (p *Pipeline) statusUpdate(logger *zap.Logger, session Session, envelope *r
 		return
 	}
 
-	success := p.tracker.Update(session.ID(), PresenceStream{Mode: StreamModeStatus, Subject: session.UserID()}, session.UserID(), PresenceMeta{
+	success := p.tracker.Update(session.Context(), session.ID(), PresenceStream{Mode: StreamModeStatus, Subject: session.UserID()}, session.UserID(), PresenceMeta{
 		Format:   session.Format(),
 		Username: session.Username(),
 		Status:   incoming.Status.Value,

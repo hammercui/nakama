@@ -19,20 +19,20 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/blevesearch/bleve"
-	"github.com/blevesearch/bleve/analysis/analyzer/keyword"
-	"github.com/blevesearch/bleve/search/query"
+	"github.com/blevesearch/bleve/v2"
+	"github.com/blevesearch/bleve/v2/analysis/analyzer/keyword"
+	"github.com/blevesearch/bleve/v2/search/query"
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"github.com/heroiclabs/nakama-common/runtime"
-	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 )
@@ -69,6 +69,7 @@ type MatchIndexEntry struct {
 	LabelString string                 `json:"label_string"`
 	TickRate    int                    `json:"tick_rate"`
 	HandlerName string                 `json:"handler_name"`
+	CreateTime  int64                  `json:"create_time"`
 }
 
 type MatchJoinResult struct {
@@ -95,7 +96,7 @@ type MatchRegistry interface {
 	// Does not ensure the match process itself is no longer running, that must be handled separately.
 	RemoveMatch(id uuid.UUID, stream PresenceStream)
 	// Update the label entry for a given match.
-	UpdateMatchLabel(id uuid.UUID, tickRate int, handlerName, label string) error
+	UpdateMatchLabel(id uuid.UUID, tickRate int, handlerName, label string, createTime int64) error
 	// List (and optionally filter) currently running matches.
 	// This can list across both authoritative and relayed matches.
 	ListMatches(ctx context.Context, limit int, authoritative *wrappers.BoolValue, label *wrappers.StringValue, minSize *wrappers.Int32Value, maxSize *wrappers.Int32Value, query *wrappers.StringValue) ([]*api.Match, error)
@@ -130,9 +131,15 @@ type LocalMatchRegistry struct {
 	metrics         *Metrics
 	node            string
 
+	ctx         context.Context
+	ctxCancelFn context.CancelFunc
+
 	matches    *sync.Map
 	matchCount *atomic.Int64
 	index      bleve.Index
+
+	pendingUpdatesMutex *sync.Mutex
+	pendingUpdates      map[string]*MatchIndexEntry
 
 	stopped   *atomic.Bool
 	stoppedCh chan struct{}
@@ -147,7 +154,9 @@ func NewLocalMatchRegistry(logger, startupLogger *zap.Logger, config Config, ses
 		startupLogger.Fatal("Failed to create match registry index", zap.Error(err))
 	}
 
-	return &LocalMatchRegistry{
+	ctx, ctxCancelFn := context.WithCancel(context.Background())
+
+	r := &LocalMatchRegistry{
 		logger:          logger,
 		config:          config,
 		sessionRegistry: sessionRegistry,
@@ -156,13 +165,61 @@ func NewLocalMatchRegistry(logger, startupLogger *zap.Logger, config Config, ses
 		metrics:         metrics,
 		node:            node,
 
+		ctx:         ctx,
+		ctxCancelFn: ctxCancelFn,
+
 		matches:    &sync.Map{},
 		matchCount: atomic.NewInt64(0),
 		index:      index,
 
+		pendingUpdatesMutex: &sync.Mutex{},
+		pendingUpdates:      make(map[string]*MatchIndexEntry, 10),
+
 		stopped:   atomic.NewBool(false),
 		stoppedCh: make(chan struct{}, 2),
 	}
+
+	go func() {
+		ticker := time.NewTicker(time.Duration(config.GetMatch().LabelUpdateIntervalMs) * time.Millisecond)
+		batch := r.index.NewBatch()
+		for {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				r.processLabelUpdates(batch)
+			}
+		}
+	}()
+
+	return r
+}
+
+func (r *LocalMatchRegistry) processLabelUpdates(batch *bleve.Batch) {
+	r.pendingUpdatesMutex.Lock()
+	if len(r.pendingUpdates) == 0 {
+		r.pendingUpdatesMutex.Unlock()
+		return
+	}
+	pendingUpdates := r.pendingUpdates
+	r.pendingUpdates = make(map[string]*MatchIndexEntry, len(pendingUpdates)+10)
+	r.pendingUpdatesMutex.Unlock()
+
+	for id, op := range pendingUpdates {
+		if op == nil {
+			batch.Delete(id)
+			continue
+		}
+		if err := batch.Index(id, op); err != nil {
+			r.logger.Error("error indexing match label update", zap.Error(err))
+		}
+	}
+
+	if err := r.index.Batch(batch); err != nil {
+		r.logger.Error("error processing match label updates", zap.Error(err))
+	}
+	batch.Reset()
 }
 
 func (r *LocalMatchRegistry) CreateMatch(ctx context.Context, logger *zap.Logger, createFn RuntimeMatchCreateFunction, module string, params map[string]interface{}) (string, error) {
@@ -260,13 +317,16 @@ func (r *LocalMatchRegistry) RemoveMatch(id uuid.UUID, stream PresenceStream) {
 	r.metrics.GaugeAuthoritativeMatches(float64(matchesRemaining))
 
 	r.tracker.UntrackByStream(stream)
-	if err := r.index.Delete(fmt.Sprintf("%v.%v", id.String(), r.node)); err != nil {
-		r.logger.Warn("Error removing match list index", zap.String("id", fmt.Sprintf("%v.%v", id.String(), r.node)), zap.Error(err))
-	}
+
+	idStr := fmt.Sprintf("%v.%v", id.String(), r.node)
+	r.pendingUpdatesMutex.Lock()
+	r.pendingUpdates[idStr] = nil
+	r.pendingUpdatesMutex.Unlock()
 
 	// If there are no more matches in this registry and a shutdown was initiated then signal
 	// that the process is complete.
 	if matchesRemaining == 0 && r.stopped.Load() {
+		r.ctxCancelFn()
 		select {
 		case r.stoppedCh <- struct{}{}:
 		default:
@@ -275,20 +335,29 @@ func (r *LocalMatchRegistry) RemoveMatch(id uuid.UUID, stream PresenceStream) {
 	}
 }
 
-func (r *LocalMatchRegistry) UpdateMatchLabel(id uuid.UUID, tickRate int, handlerName, label string) error {
+func (r *LocalMatchRegistry) UpdateMatchLabel(id uuid.UUID, tickRate int, handlerName, label string, createTime int64) error {
 	if len(label) > MatchLabelMaxBytes {
 		return ErrMatchLabelTooLong
 	}
 	var labelJSON map[string]interface{}
 	// Doesn't matter if this is not JSON.
 	_ = json.Unmarshal([]byte(label), &labelJSON)
-	return r.index.Index(fmt.Sprintf("%v.%v", id.String(), r.node), &MatchIndexEntry{
+
+	idStr := fmt.Sprintf("%v.%v", id.String(), r.node)
+	entry := &MatchIndexEntry{
 		Node:        r.node,
 		Label:       labelJSON,
 		TickRate:    tickRate,
 		HandlerName: handlerName,
 		LabelString: label,
-	})
+		CreateTime:  createTime,
+	}
+
+	r.pendingUpdatesMutex.Lock()
+	r.pendingUpdates[idStr] = entry
+	r.pendingUpdatesMutex.Unlock()
+
+	return nil
 }
 
 func (r *LocalMatchRegistry) ListMatches(ctx context.Context, limit int, authoritative *wrappers.BoolValue, label *wrappers.StringValue, minSize *wrappers.Int32Value, maxSize *wrappers.Int32Value, queryString *wrappers.StringValue) ([]*api.Match, error) {
@@ -322,6 +391,7 @@ func (r *LocalMatchRegistry) ListMatches(ctx context.Context, limit int, authori
 		}
 		searchReq := bleve.NewSearchRequestOptions(q, count, 0, false)
 		searchReq.Fields = []string{"label_string", "tick_rate", "handler_name"}
+		searchReq.SortBy([]string{"-create_time"})
 		var err error
 		labelResults, err = r.index.SearchInContext(ctx, searchReq)
 		if err != nil {
@@ -347,6 +417,7 @@ func (r *LocalMatchRegistry) ListMatches(ctx context.Context, limit int, authori
 		indexQuery.SetField("label_string")
 		searchReq := bleve.NewSearchRequestOptions(indexQuery, count, 0, false)
 		searchReq.Fields = []string{"label_string", "tick_rate", "handler_name"}
+		searchReq.SortBy([]string{"-create_time"})
 		var err error
 		labelResults, err = r.index.SearchInContext(ctx, searchReq)
 		if err != nil {
@@ -366,6 +437,7 @@ func (r *LocalMatchRegistry) ListMatches(ctx context.Context, limit int, authori
 		indexQuery := bleve.NewMatchAllQuery()
 		searchReq := bleve.NewSearchRequestOptions(indexQuery, count, 0, false)
 		searchReq.Fields = []string{"label_string", "tick_rate", "handler_name"}
+		searchReq.SortBy([]string{"-create_time"})
 		var err error
 		labelResults, err = r.index.SearchInContext(ctx, searchReq)
 		if err != nil {
@@ -501,6 +573,9 @@ func (r *LocalMatchRegistry) Stop(graceSeconds int) chan struct{} {
 
 	// Graceful shutdown not allowed/required, or grace period has expired.
 	if graceSeconds == 0 {
+		// If grace period is 0 stop match label processing immediately.
+		r.ctxCancelFn()
+
 		r.matches.Range(func(id, mh interface{}) bool {
 			mh.(*MatchHandler).Stop()
 			return true
@@ -524,6 +599,7 @@ func (r *LocalMatchRegistry) Stop(graceSeconds int) chan struct{} {
 
 	if !anyRunning {
 		// Termination was triggered and there are no active matches.
+		r.ctxCancelFn()
 		select {
 		case r.stoppedCh <- struct{}{}:
 		default:

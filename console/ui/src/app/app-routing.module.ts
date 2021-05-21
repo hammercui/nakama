@@ -36,6 +36,7 @@ import {LeaderboardComponent, LeaderboardResolver} from './leaderboard/leaderboa
 import {LeaderboardDetailsComponent} from './leaderboard/details/details.component';
 import {LeaderboardRecordsComponent, LeaderboardRecordsResolver} from './leaderboard/records/records.component';
 import {ApiExplorerComponent, ApiExplorerEndpointsResolver} from './apiexplorer/apiexplorer.component';
+import {PurchasesComponent, PurchasesResolver} from './account/purchases/purchases.component';
 
 const routes: Routes = [
   {
@@ -70,6 +71,7 @@ const routes: Routes = [
           {path: 'wallet', component: WalletComponent, resolve: [WalletLedgerResolver]},
           {path: 'friends', component: FriendsComponent, resolve: [FriendsResolver]},
           {path: 'groups', component: GroupsComponent, resolve: [GroupsResolver]},
+          {path: 'purchases', component: PurchasesComponent, resolve: [PurchasesResolver]},
         ]
       },
       {path: 'apiexplorer', component: ApiExplorerComponent, resolve: [ApiExplorerEndpointsResolver]},
@@ -82,8 +84,8 @@ const routes: Routes = [
 
 @NgModule({
   imports: [
-    RouterModule.forRoot(routes),
-    // RouterModule.forRoot(routes, { enableTracing: true }), // TODO debugging purposes only
+    RouterModule.forRoot(routes, {useHash: true}),
+    // RouterModule.forRoot(routes, { useHash: true, enableTracing: true }), // TODO debugging purposes only
   ],
   exports: [RouterModule]
 })

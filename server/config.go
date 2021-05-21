@@ -15,19 +15,17 @@
 package server
 
 import (
+	"crypto/tls"
+	"flag"
 	"fmt"
+	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
-	"flag"
-	"io/ioutil"
-
 	"github.com/heroiclabs/nakama/v3/flags"
-
-	"crypto/tls"
-
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
@@ -49,6 +47,7 @@ type Config interface {
 	GetConsole() *ConsoleConfig
 	GetLeaderboard() *LeaderboardConfig
 	GetMatchmaker() *MatchmakerConfig
+	GetIAP() *IAPConfig
 
 	Clone() (Config, error)
 }
@@ -107,6 +106,7 @@ func ParseArgs(logger *zap.Logger, args []string) Config {
 	for k, v := range mainConfig.GetRuntime().Environment {
 		mainConfig.GetRuntime().Env = append(mainConfig.GetRuntime().Env, fmt.Sprintf("%v=%v", k, v))
 	}
+	sort.Strings(mainConfig.GetRuntime().Env)
 
 	return mainConfig
 }
@@ -166,6 +166,9 @@ func CheckConfig(logger *zap.Logger, config Config) map[string]string {
 	}
 	if config.GetSocket().MaxMessageSizeBytes < 1 {
 		logger.Fatal("Socket max message size bytes must be >= 1", zap.Int64("socket.max_message_size_bytes", config.GetSocket().MaxMessageSizeBytes))
+	}
+	if config.GetSocket().MaxRequestSizeBytes < 1 {
+		logger.Fatal("Socket max request size bytes must be >= 1", zap.Int64("socket.max_request_size_bytes", config.GetSocket().MaxRequestSizeBytes))
 	}
 	if config.GetSocket().ReadBufferSizeBytes < 1 {
 		logger.Fatal("Socket read buffer size bytes must be >= 1", zap.Int("socket.read_buffer_size_bytes", config.GetSocket().ReadBufferSizeBytes))
@@ -242,6 +245,9 @@ func CheckConfig(logger *zap.Logger, config Config) map[string]string {
 	if config.GetMatch().MaxEmptySec < 0 {
 		logger.Fatal("Match max idle seconds must be >= 0", zap.Int("match.max_empty_sec", config.GetMatch().MaxEmptySec))
 	}
+	if config.GetMatch().LabelUpdateIntervalMs < 1 {
+		logger.Fatal("Match label update interval milliseconds must be > 0", zap.Int("match.label_update_interval_ms", config.GetMatch().LabelUpdateIntervalMs))
+	}
 	if config.GetTracker().EventQueueSize < 1 {
 		logger.Fatal("Tracker presence event queue size must be >= 1", zap.Int("tracker.event_queue_size", config.GetTracker().EventQueueSize))
 	}
@@ -259,6 +265,9 @@ func CheckConfig(logger *zap.Logger, config Config) map[string]string {
 	}
 	if config.GetMatchmaker().MaxIntervals < 1 {
 		logger.Fatal("Matchmaker max intervals must be >= 1", zap.Int("matchmaker.max_intervals", config.GetMatchmaker().MaxIntervals))
+	}
+	if config.GetMatchmaker().BatchPoolSize < 1 {
+		logger.Fatal("Matchmaker batch pool size must be >= 1", zap.Int("matchmaker.batch_pool_size", config.GetMatchmaker().BatchPoolSize))
 	}
 
 	// If the runtime path is not overridden, set it to `datadir/modules`.
@@ -339,11 +348,6 @@ func CheckConfig(logger *zap.Logger, config Config) map[string]string {
 		config.GetSocket().TLSCert = []tls.Certificate{cert}
 	}
 
-	// Set backwards-compatible defaults if overrides are not used.
-	if config.GetSocket().MaxRequestSizeBytes <= 0 {
-		config.GetSocket().MaxRequestSizeBytes = config.GetSocket().MaxMessageSizeBytes
-	}
-
 	return configWarnings
 }
 
@@ -385,6 +389,7 @@ type config struct {
 	Console          *ConsoleConfig     `yaml:"console" json:"console" usage:"Console settings."`
 	Leaderboard      *LeaderboardConfig `yaml:"leaderboard" json:"leaderboard" usage:"Leaderboard settings."`
 	Matchmaker       *MatchmakerConfig  `yaml:"matchmaker" json:"matchmaker" usage:"Matchmaker settings."`
+	IAP              *IAPConfig         `yaml:"iap" json:"iap" usage:"In-App Purchase settings."`
 }
 
 // NewConfig constructs a Config struct which represents server settings, and populates it with default values.
@@ -409,6 +414,7 @@ func NewConfig(logger *zap.Logger) *config {
 		Console:          NewConsoleConfig(),
 		Leaderboard:      NewLeaderboardConfig(),
 		Matchmaker:       NewMatchmakerConfig(),
+		IAP:              NewIAPConfig(),
 	}
 }
 
@@ -425,6 +431,7 @@ func (c *config) Clone() (Config, error) {
 	configConsole := *(c.Console)
 	configLeaderboard := *(c.Leaderboard)
 	configMatchmaker := *(c.Matchmaker)
+	configIAP := *(c.IAP)
 	nc := &config{
 		Name:             c.Name,
 		Datadir:          c.Datadir,
@@ -441,6 +448,7 @@ func (c *config) Clone() (Config, error) {
 		Console:          &configConsole,
 		Leaderboard:      &configLeaderboard,
 		Matchmaker:       &configMatchmaker,
+		IAP:              &configIAP,
 	}
 	nc.Socket.CertPEMBlock = make([]byte, len(c.Socket.CertPEMBlock))
 	copy(nc.Socket.CertPEMBlock, c.Socket.CertPEMBlock)
@@ -525,6 +533,10 @@ func (c *config) GetLeaderboard() *LeaderboardConfig {
 
 func (c *config) GetMatchmaker() *MatchmakerConfig {
 	return c.Matchmaker
+}
+
+func (c *config) GetIAP() *IAPConfig {
+	return c.IAP
 }
 
 // LoggerConfig is configuration relevant to logging levels and output.
@@ -627,7 +639,7 @@ func NewSocketConfig() *SocketConfig {
 		Address:              "",
 		Protocol:             "tcp",
 		MaxMessageSizeBytes:  4096,
-		MaxRequestSizeBytes:  0,
+		MaxRequestSizeBytes:  262_144, // 256 KB.
 		ReadBufferSizeBytes:  4096,
 		WriteBufferSizeBytes: 4096,
 		ReadTimeoutMs:        10 * 1000,
@@ -663,9 +675,10 @@ func NewDatabaseConfig() *DatabaseConfig {
 
 // SocialConfig is configuration relevant to the social authentication providers.
 type SocialConfig struct {
-	Steam               *SocialConfigSteam               `yaml:"steam" json:"steam" usage:"Steam configuration."`
-	FacebookInstantGame *SocialConfigFacebookInstantGame `yaml:"facebook_instant_game" json:"facebook_instant_game" usage:"Facebook Instant Game configuration"`
-	Apple               *SocialConfigApple               `yaml:"apple" json:"apple" usage:"Apple Sign In configuration."`
+	Steam                *SocialConfigSteam                `yaml:"steam" json:"steam" usage:"Steam configuration."`
+	FacebookInstantGame  *SocialConfigFacebookInstantGame  `yaml:"facebook_instant_game" json:"facebook_instant_game" usage:"Facebook Instant Game configuration."`
+	FacebookLimitedLogin *SocialConfigFacebookLimitedLogin `yaml:"facebook_limited_login" json:"facebook_limited_login" usage:"Facebook Limited Login configuration."`
+	Apple                *SocialConfigApple                `yaml:"apple" json:"apple" usage:"Apple Sign In configuration."`
 }
 
 // SocialConfigSteam is configuration relevant to Steam.
@@ -677,6 +690,11 @@ type SocialConfigSteam struct {
 // SocialConfigFacebookInstantGame is configuration relevant to Facebook Instant Games.
 type SocialConfigFacebookInstantGame struct {
 	AppSecret string `yaml:"app_secret" json:"app_secret" usage:"Facebook Instant App secret."`
+}
+
+// SocialConfigFacebookLimitedLogin is configuration relevant to Facebook Limited Login.
+type SocialConfigFacebookLimitedLogin struct {
+	AppId string `yaml:"app_id" json:"app_id" usage:"Facebook Limited Login App ID."`
 }
 
 // SocialConfigApple is configuration relevant to Apple Sign In.
@@ -693,6 +711,9 @@ func NewSocialConfig() *SocialConfig {
 		},
 		FacebookInstantGame: &SocialConfigFacebookInstantGame{
 			AppSecret: "",
+		},
+		FacebookLimitedLogin: &SocialConfigFacebookLimitedLogin{
+			AppId: "",
 		},
 		Apple: &SocialConfigApple{
 			BundleId: "",
@@ -785,23 +806,25 @@ func NewRuntimeConfig() *RuntimeConfig {
 
 // MatchConfig is configuration relevant to authoritative realtime multiplayer matches.
 type MatchConfig struct {
-	InputQueueSize       int `yaml:"input_queue_size" json:"input_queue_size" usage:"Size of the authoritative match buffer that stores client messages until they can be processed by the next tick. Default 128."`
-	CallQueueSize        int `yaml:"call_queue_size" json:"call_queue_size" usage:"Size of the authoritative match buffer that sequences calls to match handler callbacks to ensure no overlaps. Default 128."`
-	JoinAttemptQueueSize int `yaml:"join_attempt_queue_size" json:"join_attempt_queue_size" usage:"Size of the authoritative match buffer that limits the number of in-progress join attempts. Default 128."`
-	DeferredQueueSize    int `yaml:"deferred_queue_size" json:"deferred_queue_size" usage:"Size of the authoritative match buffer that holds deferred message broadcasts until the end of each loop execution. Default 128."`
-	JoinMarkerDeadlineMs int `yaml:"join_marker_deadline_ms" json:"join_marker_deadline_ms" usage:"Deadline in milliseconds that client authoritative match joins will wait for match handlers to acknowledge joins. Default 15000."`
-	MaxEmptySec          int `yaml:"max_empty_sec" json:"max_empty_sec" usage:"Maximum number of consecutive seconds that authoritative matches are allowed to be empty before they are stopped. 0 indicates no maximum. Default 0."`
+	InputQueueSize        int `yaml:"input_queue_size" json:"input_queue_size" usage:"Size of the authoritative match buffer that stores client messages until they can be processed by the next tick. Default 128."`
+	CallQueueSize         int `yaml:"call_queue_size" json:"call_queue_size" usage:"Size of the authoritative match buffer that sequences calls to match handler callbacks to ensure no overlaps. Default 128."`
+	JoinAttemptQueueSize  int `yaml:"join_attempt_queue_size" json:"join_attempt_queue_size" usage:"Size of the authoritative match buffer that limits the number of in-progress join attempts. Default 128."`
+	DeferredQueueSize     int `yaml:"deferred_queue_size" json:"deferred_queue_size" usage:"Size of the authoritative match buffer that holds deferred message broadcasts until the end of each loop execution. Default 128."`
+	JoinMarkerDeadlineMs  int `yaml:"join_marker_deadline_ms" json:"join_marker_deadline_ms" usage:"Deadline in milliseconds that client authoritative match joins will wait for match handlers to acknowledge joins. Default 15000."`
+	MaxEmptySec           int `yaml:"max_empty_sec" json:"max_empty_sec" usage:"Maximum number of consecutive seconds that authoritative matches are allowed to be empty before they are stopped. 0 indicates no maximum. Default 0."`
+	LabelUpdateIntervalMs int `yaml:"label_update_interval_ms" json:"label_update_interval_ms" usage:"Time in milliseconds between match label update batch processes. Default 1000."`
 }
 
 // NewMatchConfig creates a new MatchConfig struct.
 func NewMatchConfig() *MatchConfig {
 	return &MatchConfig{
-		InputQueueSize:       128,
-		CallQueueSize:        128,
-		JoinAttemptQueueSize: 128,
-		DeferredQueueSize:    128,
-		JoinMarkerDeadlineMs: 15000,
-		MaxEmptySec:          0,
+		InputQueueSize:        128,
+		CallQueueSize:         128,
+		JoinAttemptQueueSize:  128,
+		DeferredQueueSize:     128,
+		JoinMarkerDeadlineMs:  15000,
+		MaxEmptySec:           0,
+		LabelUpdateIntervalMs: 1000,
 	}
 }
 
@@ -835,7 +858,7 @@ type ConsoleConfig struct {
 func NewConsoleConfig() *ConsoleConfig {
 	return &ConsoleConfig{
 		Port:                7351,
-		MaxMessageSizeBytes: 4096,
+		MaxMessageSizeBytes: 4_194_304, // 4 MB.
 		ReadTimeoutMs:       10 * 1000,
 		WriteTimeoutMs:      60 * 1000,
 		IdleTimeoutMs:       300 * 1000,
@@ -863,15 +886,46 @@ func NewLeaderboardConfig() *LeaderboardConfig {
 }
 
 type MatchmakerConfig struct {
-	MaxTickets   int `yaml:"max_tickets" json:"max_tickets" usage:"Maximum number of concurrent matchmaking tickets allowed per session or party. Default 3."`
-	IntervalSec  int `yaml:"interval_sec" json:"interval_sec" usage:"How quickly the matchmaker attempts to form matches, in seconds. Default 15."`
-	MaxIntervals int `yaml:"max_intervals" json:"max_intervals" usage:"How many intervals the matchmaker attempts to find matches at the max player count, before allowing min count. Default 2."`
+	MaxTickets    int `yaml:"max_tickets" json:"max_tickets" usage:"Maximum number of concurrent matchmaking tickets allowed per session or party. Default 3."`
+	IntervalSec   int `yaml:"interval_sec" json:"interval_sec" usage:"How quickly the matchmaker attempts to form matches, in seconds. Default 15."`
+	MaxIntervals  int `yaml:"max_intervals" json:"max_intervals" usage:"How many intervals the matchmaker attempts to find matches at the max player count, before allowing min count. Default 2."`
+	BatchPoolSize int `yaml:"batch_pool_size" json:"batch_pool_size" usage:"Number of concurrent indexing batches that will be allocated."`
 }
 
 func NewMatchmakerConfig() *MatchmakerConfig {
 	return &MatchmakerConfig{
-		MaxTickets:   3,
-		IntervalSec:  15,
-		MaxIntervals: 2,
+		MaxTickets:    3,
+		IntervalSec:   15,
+		MaxIntervals:  2,
+		BatchPoolSize: 32,
 	}
+}
+
+type IAPConfig struct {
+	Apple  *IAPAppleConfig  `yaml:"apple" json:"apple" usage:"Apple App Store purchase validation configuration."`
+	Google *IAPGoogleConfig `yaml:"google" json:"google" usage:"Google Play Store purchase validation configuration."`
+	Huawei *IAPHuaweiConfig `yaml:"huawei" json:"huawei" usage:"Huawei purchase validation configuration."`
+}
+
+func NewIAPConfig() *IAPConfig {
+	return &IAPConfig{
+		Apple:  &IAPAppleConfig{},
+		Google: &IAPGoogleConfig{},
+		Huawei: &IAPHuaweiConfig{},
+	}
+}
+
+type IAPAppleConfig struct {
+	SharedPassword string `yaml:"shared_password" json:"shared_password" usage:"Your Apple Store App IAP shared password. Only necessary for validation of auto-renewable subscriptions."`
+}
+
+type IAPGoogleConfig struct {
+	ClientEmail string `yaml:"client_email" json:"client_email" usage:"Google Service Account client email."`
+	PrivateKey  string `yaml:"private_key" json:"private_key" usage:"Google Service Account private key."`
+}
+
+type IAPHuaweiConfig struct {
+	PublicKey    string `yaml:"public_key" json:"public_key" usage:"Huawei IAP store Base64 encoded Public Key."`
+	ClientID     string `yaml:"client_id" json:"client_id" usage:"Huawei OAuth client secret."`
+	ClientSecret string `yaml:"client_secret" json:"client_secret" usage:"Huawei OAuth app client secret."`
 }

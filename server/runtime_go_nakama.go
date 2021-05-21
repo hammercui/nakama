@@ -21,6 +21,8 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -35,7 +37,6 @@ import (
 	"github.com/heroiclabs/nakama-common/runtime"
 	"github.com/heroiclabs/nakama/v3/internal/cronexpr"
 	"github.com/heroiclabs/nakama/v3/social"
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
 
@@ -50,6 +51,7 @@ type RuntimeGoNakamaModule struct {
 	leaderboardRankCache LeaderboardRankCache
 	leaderboardScheduler LeaderboardScheduler
 	sessionRegistry      SessionRegistry
+	sessionCache         SessionCache
 	matchRegistry        MatchRegistry
 	tracker              Tracker
 	streamManager        StreamManager
@@ -62,7 +64,7 @@ type RuntimeGoNakamaModule struct {
 	matchCreateFn RuntimeMatchCreateFunction
 }
 
-func NewRuntimeGoNakamaModule(logger *zap.Logger, db *sql.DB, jsonpbMarshaler *jsonpb.Marshaler, config Config, socialClient *social.Client, leaderboardCache LeaderboardCache, leaderboardRankCache LeaderboardRankCache, leaderboardScheduler LeaderboardScheduler, sessionRegistry SessionRegistry, matchRegistry MatchRegistry, tracker Tracker, streamManager StreamManager, router MessageRouter) *RuntimeGoNakamaModule {
+func NewRuntimeGoNakamaModule(logger *zap.Logger, db *sql.DB, jsonpbMarshaler *jsonpb.Marshaler, config Config, socialClient *social.Client, leaderboardCache LeaderboardCache, leaderboardRankCache LeaderboardRankCache, leaderboardScheduler LeaderboardScheduler, sessionRegistry SessionRegistry, sessionCache SessionCache, matchRegistry MatchRegistry, tracker Tracker, streamManager StreamManager, router MessageRouter) *RuntimeGoNakamaModule {
 	return &RuntimeGoNakamaModule{
 		logger:               logger,
 		db:                   db,
@@ -73,6 +75,7 @@ func NewRuntimeGoNakamaModule(logger *zap.Logger, db *sql.DB, jsonpbMarshaler *j
 		leaderboardRankCache: leaderboardRankCache,
 		leaderboardScheduler: leaderboardScheduler,
 		sessionRegistry:      sessionRegistry,
+		sessionCache:         sessionCache,
 		matchRegistry:        matchRegistry,
 		tracker:              tracker,
 		streamManager:        streamManager,
@@ -195,8 +198,8 @@ func (n *RuntimeGoNakamaModule) AuthenticateFacebook(ctx context.Context, token 
 		return "", "", false, errors.New("expects id to be valid, must be 1-128 bytes")
 	}
 
-	dbUserID, dbUsername, created, err := AuthenticateFacebook(ctx, n.logger, n.db, n.socialClient, token, username, create)
-	if err == nil && importFriends {
+	dbUserID, dbUsername, created, importFriendsPossible, err := AuthenticateFacebook(ctx, n.logger, n.db, n.socialClient, n.config.GetSocial().FacebookLimitedLogin.AppId, token, username, create)
+	if err == nil && importFriends && importFriendsPossible {
 		// Errors are logged before this point and failure here does not invalidate the whole operation.
 		_ = importFacebookFriends(ctx, n.logger, n.db, n.router, n.socialClient, uuid.FromStringOrNil(dbUserID), dbUsername, token, false)
 	}
@@ -284,14 +287,16 @@ func (n *RuntimeGoNakamaModule) AuthenticateSteam(ctx context.Context, token, us
 		return "", "", false, errors.New("expects id to be valid, must be 1-128 bytes")
 	}
 
-	return AuthenticateSteam(ctx, n.logger, n.db, n.socialClient, n.config.GetSocial().Steam.AppID, n.config.GetSocial().Steam.PublisherKey, token, username, create)
+	userID, username, _, created, err := AuthenticateSteam(ctx, n.logger, n.db, n.socialClient, n.config.GetSocial().Steam.AppID, n.config.GetSocial().Steam.PublisherKey, token, username, create)
+
+	return userID, username, created, err
 }
 
 func (n *RuntimeGoNakamaModule) AuthenticateTokenGenerate(userID, username string, exp int64, vars map[string]string) (string, int64, error) {
 	if userID == "" {
 		return "", 0, errors.New("expects user id")
 	}
-	_, err := uuid.FromString(userID)
+	uid, err := uuid.FromString(userID)
 	if err != nil {
 		return "", 0, errors.New("expects valid user id")
 	}
@@ -306,6 +311,7 @@ func (n *RuntimeGoNakamaModule) AuthenticateTokenGenerate(userID, username strin
 	}
 
 	token, exp := generateTokenWithExpiry(n.config.GetSession().EncryptionKey, userID, username, vars, exp)
+	n.sessionCache.Add(uid, exp, token, 0, "")
 	return token, exp, nil
 }
 
@@ -347,7 +353,7 @@ func (n *RuntimeGoNakamaModule) AccountUpdateId(ctx context.Context, userID, use
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return errors.Errorf("error encoding metadata: %v", err.Error())
+			return fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataWrapper = &wrappers.StringValue{Value: string(metadataBytes)}
 	}
@@ -402,19 +408,19 @@ func (n *RuntimeGoNakamaModule) AccountExportId(ctx context.Context, userID stri
 
 	export, err := ExportAccount(ctx, n.logger, n.db, u)
 	if err != nil {
-		return "", errors.Errorf("error exporting account: %v", err.Error())
+		return "", fmt.Errorf("error exporting account: %v", err.Error())
 	}
 
 	exportString, err := n.jsonpbMarshaler.MarshalToString(export)
 	if err != nil {
-		return "", errors.Errorf("error encoding account export: %v", err.Error())
+		return "", fmt.Errorf("error encoding account export: %v", err.Error())
 	}
 
 	return exportString, nil
 }
 
-func (n *RuntimeGoNakamaModule) UsersGetId(ctx context.Context, userIDs []string) ([]*api.User, error) {
-	if len(userIDs) == 0 {
+func (n *RuntimeGoNakamaModule) UsersGetId(ctx context.Context, userIDs []string, facebookIDs []string) ([]*api.User, error) {
+	if len(userIDs) == 0 && len(facebookIDs) == 0 {
 		return make([]*api.User, 0), nil
 	}
 
@@ -424,7 +430,7 @@ func (n *RuntimeGoNakamaModule) UsersGetId(ctx context.Context, userIDs []string
 		}
 	}
 
-	users, err := GetUsers(ctx, n.logger, n.db, n.tracker, userIDs, nil, nil)
+	users, err := GetUsers(ctx, n.logger, n.db, n.tracker, userIDs, nil, facebookIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -456,13 +462,16 @@ func (n *RuntimeGoNakamaModule) UsersBanId(ctx context.Context, userIDs []string
 		return nil
 	}
 
+	ids := make([]uuid.UUID, 0, len(userIDs))
 	for _, id := range userIDs {
-		if _, err := uuid.FromString(id); err != nil {
+		id, err := uuid.FromString(id)
+		if err != nil {
 			return errors.New("each user id must be a valid id string")
 		}
+		ids = append(ids, id)
 	}
 
-	return BanUsers(ctx, n.logger, n.db, userIDs)
+	return BanUsers(ctx, n.logger, n.db, n.sessionCache, ids)
 }
 
 func (n *RuntimeGoNakamaModule) UsersUnbanId(ctx context.Context, userIDs []string) error {
@@ -470,13 +479,16 @@ func (n *RuntimeGoNakamaModule) UsersUnbanId(ctx context.Context, userIDs []stri
 		return nil
 	}
 
+	ids := make([]uuid.UUID, 0, len(userIDs))
 	for _, id := range userIDs {
-		if _, err := uuid.FromString(id); err != nil {
+		id, err := uuid.FromString(id)
+		if err != nil {
 			return errors.New("each user id must be a valid id string")
 		}
+		ids = append(ids, id)
 	}
 
-	return UnbanUsers(ctx, n.logger, n.db, userIDs)
+	return UnbanUsers(ctx, n.logger, n.db, n.sessionCache, ids)
 }
 
 func (n *RuntimeGoNakamaModule) LinkApple(ctx context.Context, userID, token string) error {
@@ -521,7 +533,7 @@ func (n *RuntimeGoNakamaModule) LinkFacebook(ctx context.Context, userID, userna
 		return errors.New("user ID must be a valid identifier")
 	}
 
-	return LinkFacebook(ctx, n.logger, n.db, n.socialClient, n.router, id, username, token, importFriends)
+	return LinkFacebook(ctx, n.logger, n.db, n.socialClient, n.router, id, username, n.config.GetSocial().FacebookLimitedLogin.AppId, token, importFriends)
 }
 
 func (n *RuntimeGoNakamaModule) LinkFacebookInstantGame(ctx context.Context, userID, signedPlayerInfo string) error {
@@ -551,13 +563,13 @@ func (n *RuntimeGoNakamaModule) LinkGoogle(ctx context.Context, userID, token st
 	return LinkGoogle(ctx, n.logger, n.db, n.socialClient, id, token)
 }
 
-func (n *RuntimeGoNakamaModule) LinkSteam(ctx context.Context, userID, token string) error {
+func (n *RuntimeGoNakamaModule) LinkSteam(ctx context.Context, userID, username, token string, importFriends bool) error {
 	id, err := uuid.FromString(userID)
 	if err != nil {
 		return errors.New("user ID must be a valid identifier")
 	}
 
-	return LinkSteam(ctx, n.logger, n.db, n.config, n.socialClient, id, token)
+	return LinkSteam(ctx, n.logger, n.db, n.config, n.socialClient, n.router, id, username, token, importFriends)
 }
 
 func (n *RuntimeGoNakamaModule) ReadFile(relPath string) (*os.File, error) {
@@ -606,7 +618,7 @@ func (n *RuntimeGoNakamaModule) UnlinkFacebook(ctx context.Context, userID, toke
 		return errors.New("user ID must be a valid identifier")
 	}
 
-	return UnlinkFacebook(ctx, n.logger, n.db, n.socialClient, id, token)
+	return UnlinkFacebook(ctx, n.logger, n.db, n.socialClient, n.config.GetSocial().FacebookLimitedLogin.AppId, id, token)
 }
 
 func (n *RuntimeGoNakamaModule) UnlinkFacebookInstantGame(ctx context.Context, userID, signedPlayerInfo string) error {
@@ -1012,13 +1024,22 @@ func (n *RuntimeGoNakamaModule) StreamSendRaw(mode uint8, subject, subcontext, l
 	return nil
 }
 
-func (n *RuntimeGoNakamaModule) SessionDisconnect(ctx context.Context, sessionID string) error {
+func (n *RuntimeGoNakamaModule) SessionDisconnect(ctx context.Context, sessionID string, reason ...runtime.PresenceReason) error {
 	sid, err := uuid.FromString(sessionID)
 	if err != nil {
 		return errors.New("expects valid session id")
 	}
 
 	return n.sessionRegistry.Disconnect(ctx, sid)
+}
+
+func (n *RuntimeGoNakamaModule) SessionLogout(userID, token, refreshToken string) error {
+	uid, err := uuid.FromString(userID)
+	if err != nil {
+		return errors.New("expects valid user id")
+	}
+
+	return SessionLogout(n.config, n.sessionCache, uid, token, refreshToken)
 }
 
 func (n *RuntimeGoNakamaModule) MatchCreate(ctx context.Context, module string, params map[string]interface{}) (string, error) {
@@ -1071,7 +1092,7 @@ func (n *RuntimeGoNakamaModule) NotificationSend(ctx context.Context, userID, su
 
 	contentBytes, err := json.Marshal(content)
 	if err != nil {
-		return errors.Errorf("failed to convert content: %s", err.Error())
+		return fmt.Errorf("failed to convert content: %s", err.Error())
 	}
 	contentString := string(contentBytes)
 
@@ -1119,7 +1140,7 @@ func (n *RuntimeGoNakamaModule) NotificationsSend(ctx context.Context, notificat
 
 		contentBytes, err := json.Marshal(notification.Content)
 		if err != nil {
-			return errors.Errorf("failed to convert content: %s", err.Error())
+			return fmt.Errorf("failed to convert content: %s", err.Error())
 		}
 		contentString := string(contentBytes)
 
@@ -1138,7 +1159,7 @@ func (n *RuntimeGoNakamaModule) NotificationsSend(ctx context.Context, notificat
 
 		no := ns[uid]
 		if no == nil {
-			no = make([]*api.Notification, 0)
+			no = make([]*api.Notification, 0, 1)
 		}
 		no = append(no, &api.Notification{
 			Id:         uuid.Must(uuid.NewV4()).String(),
@@ -1165,7 +1186,7 @@ func (n *RuntimeGoNakamaModule) WalletUpdate(ctx context.Context, userID string,
 	if metadata != nil {
 		metadataBytes, err = json.Marshal(metadata)
 		if err != nil {
-			return nil, nil, errors.Errorf("failed to convert metadata: %s", err.Error())
+			return nil, nil, fmt.Errorf("failed to convert metadata: %s", err.Error())
 		}
 	}
 
@@ -1202,7 +1223,7 @@ func (n *RuntimeGoNakamaModule) WalletsUpdate(ctx context.Context, updates []*ru
 		if update.Metadata != nil {
 			metadataBytes, err = json.Marshal(update.Metadata)
 			if err != nil {
-				return nil, errors.Errorf("failed to convert metadata: %s", err.Error())
+				return nil, fmt.Errorf("failed to convert metadata: %s", err.Error())
 			}
 		}
 
@@ -1224,7 +1245,7 @@ func (n *RuntimeGoNakamaModule) WalletLedgerUpdate(ctx context.Context, itemID s
 
 	metadataBytes, err := json.Marshal(metadata)
 	if err != nil {
-		return nil, errors.Errorf("failed to convert metadata: %s", err.Error())
+		return nil, fmt.Errorf("failed to convert metadata: %s", err.Error())
 	}
 
 	return UpdateWalletLedger(ctx, n.logger, n.db, id, string(metadataBytes))
@@ -1414,7 +1435,7 @@ func (n *RuntimeGoNakamaModule) MultiUpdate(ctx context.Context, accountUpdates 
 		if update.Metadata != nil {
 			metadataBytes, err := json.Marshal(update.Metadata)
 			if err != nil {
-				return nil, nil, errors.Errorf("error encoding metadata: %v", err.Error())
+				return nil, nil, fmt.Errorf("error encoding metadata: %v", err.Error())
 			}
 			metadataWrapper = &wrappers.StringValue{Value: string(metadataBytes)}
 		}
@@ -1501,7 +1522,7 @@ func (n *RuntimeGoNakamaModule) MultiUpdate(ctx context.Context, accountUpdates 
 		if update.Metadata != nil {
 			metadataBytes, err = json.Marshal(update.Metadata)
 			if err != nil {
-				return nil, nil, errors.Errorf("failed to convert metadata: %s", err.Error())
+				return nil, nil, fmt.Errorf("failed to convert metadata: %s", err.Error())
 			}
 		}
 
@@ -1552,7 +1573,7 @@ func (n *RuntimeGoNakamaModule) LeaderboardCreate(ctx context.Context, id string
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return errors.Errorf("error encoding metadata: %v", err.Error())
+			return fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataStr = string(metadataBytes)
 	}
@@ -1626,7 +1647,7 @@ func (n *RuntimeGoNakamaModule) LeaderboardRecordWrite(ctx context.Context, id, 
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return nil, errors.Errorf("error encoding metadata: %v", err.Error())
+			return nil, fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataStr = string(metadataBytes)
 	}
@@ -1683,7 +1704,7 @@ func (n *RuntimeGoNakamaModule) TournamentCreate(ctx context.Context, id string,
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return errors.Errorf("error encoding metadata: %v", err.Error())
+			return fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataStr = string(metadataBytes)
 	}
@@ -1844,7 +1865,7 @@ func (n *RuntimeGoNakamaModule) TournamentRecordWrite(ctx context.Context, id, o
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return nil, errors.Errorf("error encoding metadata: %v", err.Error())
+			return nil, fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataStr = string(metadataBytes)
 	}
@@ -1873,6 +1894,100 @@ func (n *RuntimeGoNakamaModule) TournamentRecordsHaystack(ctx context.Context, i
 	return TournamentRecordsHaystack(ctx, n.logger, n.db, n.leaderboardCache, n.leaderboardRankCache, id, owner, limit, expiry)
 }
 
+func (n *RuntimeGoNakamaModule) PurchaseValidateApple(ctx context.Context, userID, receipt string) (*api.ValidatePurchaseResponse, error) {
+	if n.config.GetIAP().Apple.SharedPassword == "" {
+		return nil, errors.New("Apple IAP is not configured.")
+	}
+
+	uid, err := uuid.FromString(userID)
+	if err != nil {
+		return nil, errors.New("user ID must be a valid id string")
+	}
+
+	if len(receipt) < 1 {
+		return nil, errors.New("receipt cannot be empty string")
+	}
+
+	validation, err := ValidatePurchasesApple(ctx, n.logger, n.db, uid, n.config.GetIAP().Apple.SharedPassword, receipt)
+	if err != nil {
+		return nil, err
+	}
+
+	return validation, nil
+}
+
+func (n *RuntimeGoNakamaModule) PurchaseValidateGoogle(ctx context.Context, userID, receipt string) (*api.ValidatePurchaseResponse, error) {
+	if n.config.GetIAP().Google.ClientEmail == "" || n.config.GetIAP().Google.PrivateKey == "" {
+		return nil, errors.New("Google IAP is not configured.")
+	}
+
+	uid, err := uuid.FromString(userID)
+	if err != nil {
+		return nil, errors.New("user ID must be a valid id string")
+	}
+
+	if len(receipt) < 1 {
+		return nil, errors.New("receipt cannot be empty string")
+	}
+
+	validation, err := ValidatePurchaseGoogle(ctx, n.logger, n.db, uid, n.config.GetIAP().Google, receipt)
+	if err != nil {
+		return nil, err
+	}
+
+	return validation, nil
+}
+
+func (n *RuntimeGoNakamaModule) PurchaseValidateHuawei(ctx context.Context, userID, signature, inAppPurchaseData string) (*api.ValidatePurchaseResponse, error) {
+	if n.config.GetIAP().Huawei.ClientID == "" ||
+		n.config.GetIAP().Huawei.ClientSecret == "" ||
+		n.config.GetIAP().Huawei.PublicKey == "" {
+		return nil, errors.New("Huawei IAP is not configured.")
+	}
+
+	uid, err := uuid.FromString(userID)
+	if err != nil {
+		return nil, errors.New("user ID must be a valid id string")
+	}
+
+	if len(signature) < 1 {
+		return nil, errors.New("signature cannot be empty string")
+	}
+
+	if len(inAppPurchaseData) < 1 {
+		return nil, errors.New("inAppPurchaseData cannot be empty string")
+	}
+
+	validation, err := ValidatePurchaseHuawei(ctx, n.logger, n.db, uid, n.config.GetIAP().Huawei, inAppPurchaseData, signature)
+	if err != nil {
+		return nil, err
+	}
+
+	return validation, nil
+}
+
+func (n *RuntimeGoNakamaModule) PurchasesList(ctx context.Context, userID string, limit int, cursor string) (*api.PurchaseList, error) {
+	if userID != "" {
+		if _, err := uuid.FromString(userID); err != nil {
+			return nil, errors.New("expects a valid user ID")
+		}
+	}
+
+	if limit <= 0 || limit > 100 {
+		return nil, errors.New("limit must be a positive value <= 100")
+	}
+
+	return ListPurchases(ctx, n.logger, n.db, userID, limit, cursor)
+}
+
+func (n *RuntimeGoNakamaModule) PurchaseGetByTransactionId(ctx context.Context, transactionID string) (string, *api.ValidatedPurchase, error) {
+	if transactionID == "" {
+		return "", nil, errors.New("expects a transaction id string.")
+	}
+
+	return GetPurchaseByTransactionID(ctx, n.logger, n.db, transactionID)
+}
+
 func (n *RuntimeGoNakamaModule) GroupsGetId(ctx context.Context, groupIDs []string) ([]*api.Group, error) {
 	if len(groupIDs) == 0 {
 		return make([]*api.Group, 0), nil
@@ -1884,12 +1999,7 @@ func (n *RuntimeGoNakamaModule) GroupsGetId(ctx context.Context, groupIDs []stri
 		}
 	}
 
-	groups, err := GetGroups(ctx, n.logger, n.db, groupIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	return groups, nil
+	return GetGroups(ctx, n.logger, n.db, groupIDs)
 }
 
 func (n *RuntimeGoNakamaModule) GroupCreate(ctx context.Context, userID, name, creatorID, langTag, description, avatarUrl string, open bool, metadata map[string]interface{}, maxCount int) (*api.Group, error) {
@@ -1914,7 +2024,7 @@ func (n *RuntimeGoNakamaModule) GroupCreate(ctx context.Context, userID, name, c
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return nil, errors.Errorf("error encoding metadata: %v", err.Error())
+			return nil, fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataStr = string(metadataBytes)
 	}
@@ -1967,7 +2077,7 @@ func (n *RuntimeGoNakamaModule) GroupUpdate(ctx context.Context, id, name, creat
 	if metadata != nil {
 		metadataBytes, err := json.Marshal(metadata)
 		if err != nil {
-			return errors.Errorf("error encoding metadata: %v", err.Error())
+			return fmt.Errorf("error encoding metadata: %v", err.Error())
 		}
 		metadataWrapper = &wrappers.StringValue{Value: string(metadataBytes)}
 	}

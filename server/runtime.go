@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,6 @@ import (
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"github.com/heroiclabs/nakama/v3/social"
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 )
@@ -56,6 +56,8 @@ type (
 	RuntimeAfterUpdateAccountFunction                      func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.UpdateAccountRequest) error
 	RuntimeBeforeSessionRefreshFunction                    func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.SessionRefreshRequest) (*api.SessionRefreshRequest, error, codes.Code)
 	RuntimeAfterSessionRefreshFunction                     func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.Session, in *api.SessionRefreshRequest) error
+	RuntimeBeforeSessionLogoutFunction                     func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.SessionLogoutRequest) (*api.SessionLogoutRequest, error, codes.Code)
+	RuntimeAfterSessionLogoutFunction                      func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.SessionLogoutRequest) error
 	RuntimeBeforeAuthenticateAppleFunction                 func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AuthenticateAppleRequest) (*api.AuthenticateAppleRequest, error, codes.Code)
 	RuntimeAfterAuthenticateAppleFunction                  func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.Session, in *api.AuthenticateAppleRequest) error
 	RuntimeBeforeAuthenticateCustomFunction                func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AuthenticateCustomRequest) (*api.AuthenticateCustomRequest, error, codes.Code)
@@ -86,6 +88,8 @@ type (
 	RuntimeAfterBlockFriendsFunction                       func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.BlockFriendsRequest) error
 	RuntimeBeforeImportFacebookFriendsFunction             func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ImportFacebookFriendsRequest) (*api.ImportFacebookFriendsRequest, error, codes.Code)
 	RuntimeAfterImportFacebookFriendsFunction              func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ImportFacebookFriendsRequest) error
+	RuntimeBeforeImportSteamFriendsFunction                func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ImportSteamFriendsRequest) (*api.ImportSteamFriendsRequest, error, codes.Code)
+	RuntimeAfterImportSteamFriendsFunction                 func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ImportSteamFriendsRequest) error
 	RuntimeBeforeCreateGroupFunction                       func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.CreateGroupRequest) (*api.CreateGroupRequest, error, codes.Code)
 	RuntimeAfterCreateGroupFunction                        func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.Group, in *api.CreateGroupRequest) error
 	RuntimeBeforeUpdateGroupFunction                       func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.UpdateGroupRequest) (*api.UpdateGroupRequest, error, codes.Code)
@@ -136,8 +140,8 @@ type (
 	RuntimeAfterLinkGameCenterFunction                     func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AccountGameCenter) error
 	RuntimeBeforeLinkGoogleFunction                        func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AccountGoogle) (*api.AccountGoogle, error, codes.Code)
 	RuntimeAfterLinkGoogleFunction                         func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AccountGoogle) error
-	RuntimeBeforeLinkSteamFunction                         func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AccountSteam) (*api.AccountSteam, error, codes.Code)
-	RuntimeAfterLinkSteamFunction                          func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.AccountSteam) error
+	RuntimeBeforeLinkSteamFunction                         func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.LinkSteamRequest) (*api.LinkSteamRequest, error, codes.Code)
+	RuntimeAfterLinkSteamFunction                          func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.LinkSteamRequest) error
 	RuntimeBeforeListMatchesFunction                       func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ListMatchesRequest) (*api.ListMatchesRequest, error, codes.Code)
 	RuntimeAfterListMatchesFunction                        func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.MatchList, in *api.ListMatchesRequest) error
 	RuntimeBeforeListNotificationsFunction                 func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ListNotificationsRequest) (*api.ListNotificationsRequest, error, codes.Code)
@@ -184,6 +188,12 @@ type (
 	RuntimeAfterGetUsersFunction                           func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.Users, in *api.GetUsersRequest) error
 	RuntimeBeforeEventFunction                             func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.Event) (*api.Event, error, codes.Code)
 	RuntimeAfterEventFunction                              func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.Event) error
+	RuntimeBeforeValidatePurchaseAppleFunction             func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ValidatePurchaseAppleRequest) (*api.ValidatePurchaseAppleRequest, error, codes.Code)
+	RuntimeAfterValidatePurchaseAppleFunction              func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.ValidatePurchaseResponse, in *api.ValidatePurchaseAppleRequest) error
+	RuntimeBeforeValidatePurchaseGoogleFunction            func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ValidatePurchaseGoogleRequest) (*api.ValidatePurchaseGoogleRequest, error, codes.Code)
+	RuntimeAfterValidatePurchaseGoogleFunction             func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.ValidatePurchaseResponse, in *api.ValidatePurchaseGoogleRequest) error
+	RuntimeBeforeValidatePurchaseHuaweiFunction            func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, in *api.ValidatePurchaseHuaweiRequest) (*api.ValidatePurchaseHuaweiRequest, error, codes.Code)
+	RuntimeAfterValidatePurchaseHuaweiFunction             func(ctx context.Context, logger *zap.Logger, userID, username string, vars map[string]string, expiry int64, clientIP, clientPort string, out *api.ValidatePurchaseResponse, in *api.ValidatePurchaseHuaweiRequest) error
 
 	RuntimeMatchmakerMatchedFunction func(ctx context.Context, entries []*MatchmakerEntry) (string, bool, error)
 
@@ -256,7 +266,9 @@ type RuntimeMatchCore interface {
 	MatchTerminate(tick int64, state interface{}, graceSeconds int) (interface{}, error)
 	GetState(state interface{}) (string, error)
 	Label() string
+	TickRate() int
 	HandlerName() string
+	CreateTime() int64
 	Cancel()
 }
 
@@ -284,6 +296,7 @@ type RuntimeBeforeReqFunctions struct {
 	beforeGetAccountFunction                        RuntimeBeforeGetAccountFunction
 	beforeUpdateAccountFunction                     RuntimeBeforeUpdateAccountFunction
 	beforeSessionRefreshFunction                    RuntimeBeforeSessionRefreshFunction
+	beforeSessionLogoutFunction                     RuntimeBeforeSessionLogoutFunction
 	beforeAuthenticateAppleFunction                 RuntimeBeforeAuthenticateAppleFunction
 	beforeAuthenticateCustomFunction                RuntimeBeforeAuthenticateCustomFunction
 	beforeAuthenticateDeviceFunction                RuntimeBeforeAuthenticateDeviceFunction
@@ -299,6 +312,7 @@ type RuntimeBeforeReqFunctions struct {
 	beforeDeleteFriendsFunction                     RuntimeBeforeDeleteFriendsFunction
 	beforeBlockFriendsFunction                      RuntimeBeforeBlockFriendsFunction
 	beforeImportFacebookFriendsFunction             RuntimeBeforeImportFacebookFriendsFunction
+	beforeImportSteamFriendsFunction                RuntimeBeforeImportSteamFriendsFunction
 	beforeCreateGroupFunction                       RuntimeBeforeCreateGroupFunction
 	beforeUpdateGroupFunction                       RuntimeBeforeUpdateGroupFunction
 	beforeDeleteGroupFunction                       RuntimeBeforeDeleteGroupFunction
@@ -348,12 +362,16 @@ type RuntimeBeforeReqFunctions struct {
 	beforeUnlinkSteamFunction                       RuntimeBeforeUnlinkSteamFunction
 	beforeGetUsersFunction                          RuntimeBeforeGetUsersFunction
 	beforeEventFunction                             RuntimeBeforeEventFunction
+	beforeValidatePurchaseAppleFunction             RuntimeBeforeValidatePurchaseAppleFunction
+	beforeValidatePurchaseGoogleFunction            RuntimeBeforeValidatePurchaseGoogleFunction
+	beforeValidatePurchaseHuaweiFunction            RuntimeBeforeValidatePurchaseHuaweiFunction
 }
 
 type RuntimeAfterReqFunctions struct {
 	afterGetAccountFunction                        RuntimeAfterGetAccountFunction
 	afterUpdateAccountFunction                     RuntimeAfterUpdateAccountFunction
 	afterSessionRefreshFunction                    RuntimeAfterSessionRefreshFunction
+	afterSessionLogoutFunction                     RuntimeAfterSessionLogoutFunction
 	afterAuthenticateAppleFunction                 RuntimeAfterAuthenticateAppleFunction
 	afterAuthenticateCustomFunction                RuntimeAfterAuthenticateCustomFunction
 	afterAuthenticateDeviceFunction                RuntimeAfterAuthenticateDeviceFunction
@@ -369,6 +387,7 @@ type RuntimeAfterReqFunctions struct {
 	afterDeleteFriendsFunction                     RuntimeAfterDeleteFriendsFunction
 	afterBlockFriendsFunction                      RuntimeAfterBlockFriendsFunction
 	afterImportFacebookFriendsFunction             RuntimeAfterImportFacebookFriendsFunction
+	afterImportSteamFriendsFunction                RuntimeAfterImportSteamFriendsFunction
 	afterCreateGroupFunction                       RuntimeAfterCreateGroupFunction
 	afterUpdateGroupFunction                       RuntimeAfterUpdateGroupFunction
 	afterDeleteGroupFunction                       RuntimeAfterDeleteGroupFunction
@@ -418,6 +437,9 @@ type RuntimeAfterReqFunctions struct {
 	afterUnlinkSteamFunction                       RuntimeAfterUnlinkSteamFunction
 	afterGetUsersFunction                          RuntimeAfterGetUsersFunction
 	afterEventFunction                             RuntimeAfterEventFunction
+	afterValidatePurchaseAppleFunction             RuntimeAfterValidatePurchaseAppleFunction
+	afterValidatePurchaseGoogleFunction            RuntimeAfterValidatePurchaseGoogleFunction
+	afterValidatePurchaseHuaweiFunction            RuntimeAfterValidatePurchaseHuaweiFunction
 }
 
 type Runtime struct {
@@ -493,7 +515,7 @@ func GetRuntimePaths(logger *zap.Logger, rootPath string) ([]string, error) {
 		return nil, err
 	}
 
-	paths := make([]string, 0)
+	paths := make([]string, 0, 5)
 	if err := filepath.Walk(rootPath, func(path string, f os.FileInfo, err error) error {
 		if err != nil {
 			logger.Error("Error listing runtime path", zap.String("path", path), zap.Error(err))
@@ -541,7 +563,7 @@ func CheckRuntime(logger *zap.Logger, config Config) error {
 	return nil
 }
 
-func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *jsonpb.Marshaler, jsonpbUnmarshaler *jsonpb.Unmarshaler, config Config, socialClient *social.Client, leaderboardCache LeaderboardCache, leaderboardRankCache LeaderboardRankCache, leaderboardScheduler LeaderboardScheduler, sessionRegistry SessionRegistry, matchRegistry MatchRegistry, tracker Tracker, metrics *Metrics, streamManager StreamManager, router MessageRouter) (*Runtime, *RuntimeInfo, error) {
+func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *jsonpb.Marshaler, jsonpbUnmarshaler *jsonpb.Unmarshaler, config Config, socialClient *social.Client, leaderboardCache LeaderboardCache, leaderboardRankCache LeaderboardRankCache, leaderboardScheduler LeaderboardScheduler, sessionRegistry SessionRegistry, sessionCache SessionCache, matchRegistry MatchRegistry, tracker Tracker, metrics *Metrics, streamManager StreamManager, router MessageRouter) (*Runtime, *RuntimeInfo, error) {
 	runtimeConfig := config.GetRuntime()
 	startupLogger.Info("Initialising runtime", zap.String("path", runtimeConfig.Path))
 
@@ -556,19 +578,19 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 
 	matchProvider := NewMatchProvider()
 
-	goModules, goRPCFunctions, goBeforeRtFunctions, goAfterRtFunctions, goBeforeReqFunctions, goAfterReqFunctions, goMatchmakerMatchedFunction, goTournamentEndFunction, goTournamentResetFunction, goLeaderboardResetFunction, allEventFunctions, goMatchNamesListFn, err := NewRuntimeProviderGo(logger, startupLogger, db, jsonpbMarshaler, config, socialClient, leaderboardCache, leaderboardRankCache, leaderboardScheduler, sessionRegistry, matchRegistry, tracker, streamManager, router, runtimeConfig.Path, paths, eventQueue, matchProvider)
+	goModules, goRPCFunctions, goBeforeRtFunctions, goAfterRtFunctions, goBeforeReqFunctions, goAfterReqFunctions, goMatchmakerMatchedFunction, goTournamentEndFunction, goTournamentResetFunction, goLeaderboardResetFunction, allEventFunctions, goMatchNamesListFn, err := NewRuntimeProviderGo(logger, startupLogger, db, jsonpbMarshaler, config, socialClient, leaderboardCache, leaderboardRankCache, leaderboardScheduler, sessionRegistry, sessionCache, matchRegistry, tracker, streamManager, router, runtimeConfig.Path, paths, eventQueue, matchProvider)
 	if err != nil {
 		startupLogger.Error("Error initialising Go runtime provider", zap.Error(err))
 		return nil, nil, err
 	}
 
-	luaModules, luaRPCFunctions, luaBeforeRtFunctions, luaAfterRtFunctions, luaBeforeReqFunctions, luaAfterReqFunctions, luaMatchmakerMatchedFunction, luaTournamentEndFunction, luaTournamentResetFunction, luaLeaderboardResetFunction, err := NewRuntimeProviderLua(logger, startupLogger, db, jsonpbMarshaler, jsonpbUnmarshaler, config, socialClient, leaderboardCache, leaderboardRankCache, leaderboardScheduler, sessionRegistry, matchRegistry, tracker, metrics, streamManager, router, allEventFunctions.eventFunction, runtimeConfig.Path, paths, matchProvider)
+	luaModules, luaRPCFunctions, luaBeforeRtFunctions, luaAfterRtFunctions, luaBeforeReqFunctions, luaAfterReqFunctions, luaMatchmakerMatchedFunction, luaTournamentEndFunction, luaTournamentResetFunction, luaLeaderboardResetFunction, err := NewRuntimeProviderLua(logger, startupLogger, db, jsonpbMarshaler, jsonpbUnmarshaler, config, socialClient, leaderboardCache, leaderboardRankCache, leaderboardScheduler, sessionRegistry, sessionCache, matchRegistry, tracker, metrics, streamManager, router, allEventFunctions.eventFunction, runtimeConfig.Path, paths, matchProvider)
 	if err != nil {
 		startupLogger.Error("Error initialising Lua runtime provider", zap.Error(err))
 		return nil, nil, err
 	}
 
-	jsModules, jsRPCFunctions, jsBeforeRtFunctions, jsAfterRtFunctions, jsBeforeReqFunctions, jsAfterReqFunctions, jsMatchmakerMatchedFunction, jsTournamentEndFunction, jsTournamentResetFunction, jsLeaderboardResetFunction, err := NewRuntimeProviderJS(logger, startupLogger, db, jsonpbMarshaler, jsonpbUnmarshaler, config, socialClient, leaderboardCache, leaderboardRankCache, leaderboardScheduler, sessionRegistry, matchRegistry, tracker, metrics, streamManager, router, allEventFunctions.eventFunction, runtimeConfig.Path, runtimeConfig.JsEntrypoint, matchProvider)
+	jsModules, jsRPCFunctions, jsBeforeRtFunctions, jsAfterRtFunctions, jsBeforeReqFunctions, jsAfterReqFunctions, jsMatchmakerMatchedFunction, jsTournamentEndFunction, jsTournamentResetFunction, jsLeaderboardResetFunction, err := NewRuntimeProviderJS(logger, startupLogger, db, jsonpbMarshaler, jsonpbUnmarshaler, config, socialClient, leaderboardCache, leaderboardRankCache, leaderboardScheduler, sessionRegistry, sessionCache, matchRegistry, tracker, metrics, streamManager, router, allEventFunctions.eventFunction, runtimeConfig.Path, runtimeConfig.JsEntrypoint, matchProvider)
 	if err != nil {
 		startupLogger.Error("Error initialising JavaScript runtime provider", zap.Error(err))
 		return nil, nil, err
@@ -658,6 +680,9 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if allBeforeReqFunctions.beforeSessionRefreshFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "sessionrefresh"))
 	}
+	if allBeforeReqFunctions.beforeSessionLogoutFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "sessionlogout"))
+	}
 	if allBeforeReqFunctions.beforeAuthenticateAppleFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "authenticateapple"))
 	}
@@ -702,6 +727,9 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	}
 	if allBeforeReqFunctions.beforeImportFacebookFriendsFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "importfacebookfriends"))
+	}
+	if allBeforeReqFunctions.beforeImportSteamFriendsFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "importsteamfriends"))
 	}
 	if allBeforeReqFunctions.beforeCreateGroupFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "creategroup"))
@@ -847,6 +875,15 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if allBeforeReqFunctions.beforeGetUsersFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "getusers"))
 	}
+	if allBeforeReqFunctions.beforeValidatePurchaseAppleFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "receiptvalidateapple"))
+	}
+	if allBeforeReqFunctions.beforeValidatePurchaseGoogleFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "receiptvalidategoogle"))
+	}
+	if allBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "receiptvalidatehuawei"))
+	}
 	if allBeforeReqFunctions.beforeEventFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime Before custom events function invocation")
 	}
@@ -863,6 +900,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if luaBeforeReqFunctions.beforeSessionRefreshFunction != nil {
 		allBeforeReqFunctions.beforeSessionRefreshFunction = luaBeforeReqFunctions.beforeSessionRefreshFunction
 		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "sessionrefresh"))
+	}
+	if luaBeforeReqFunctions.beforeSessionLogoutFunction != nil {
+		allBeforeReqFunctions.beforeSessionLogoutFunction = luaBeforeReqFunctions.beforeSessionLogoutFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "sessionlogout"))
 	}
 	if luaBeforeReqFunctions.beforeAuthenticateAppleFunction != nil {
 		allBeforeReqFunctions.beforeAuthenticateAppleFunction = luaBeforeReqFunctions.beforeAuthenticateAppleFunction
@@ -923,6 +964,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if luaBeforeReqFunctions.beforeImportFacebookFriendsFunction != nil {
 		allBeforeReqFunctions.beforeImportFacebookFriendsFunction = luaBeforeReqFunctions.beforeImportFacebookFriendsFunction
 		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "importfacebookfriends"))
+	}
+	if luaBeforeReqFunctions.beforeImportSteamFriendsFunction != nil {
+		allBeforeReqFunctions.beforeImportSteamFriendsFunction = luaBeforeReqFunctions.beforeImportSteamFriendsFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "importsteamfriends"))
 	}
 	if luaBeforeReqFunctions.beforeCreateGroupFunction != nil {
 		allBeforeReqFunctions.beforeCreateGroupFunction = luaBeforeReqFunctions.beforeCreateGroupFunction
@@ -1112,6 +1157,18 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 		allBeforeReqFunctions.beforeGetUsersFunction = luaBeforeReqFunctions.beforeGetUsersFunction
 		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "getusers"))
 	}
+	if luaBeforeReqFunctions.beforeValidatePurchaseAppleFunction != nil {
+		allBeforeReqFunctions.beforeValidatePurchaseAppleFunction = luaBeforeReqFunctions.beforeValidatePurchaseAppleFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "receiptvalidateapple"))
+	}
+	if luaBeforeReqFunctions.beforeValidatePurchaseGoogleFunction != nil {
+		allBeforeReqFunctions.beforeValidatePurchaseGoogleFunction = luaBeforeReqFunctions.beforeValidatePurchaseGoogleFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "receiptvalidategoogle"))
+	}
+	if luaBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction != nil {
+		allBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction = luaBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "receiptvalidatehuawei"))
+	}
 	if luaBeforeReqFunctions.beforeEventFunction != nil {
 		allBeforeReqFunctions.beforeEventFunction = luaBeforeReqFunctions.beforeEventFunction
 		startupLogger.Info("Registered Lua runtime Before custom events function invocation")
@@ -1129,6 +1186,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if goBeforeReqFunctions.beforeSessionRefreshFunction != nil {
 		allBeforeReqFunctions.beforeSessionRefreshFunction = goBeforeReqFunctions.beforeSessionRefreshFunction
 		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "sessionrefresh"))
+	}
+	if goBeforeReqFunctions.beforeSessionLogoutFunction != nil {
+		allBeforeReqFunctions.beforeSessionLogoutFunction = goBeforeReqFunctions.beforeSessionLogoutFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "sessionlogout"))
 	}
 	if goBeforeReqFunctions.beforeAuthenticateAppleFunction != nil {
 		allBeforeReqFunctions.beforeAuthenticateAppleFunction = goBeforeReqFunctions.beforeAuthenticateAppleFunction
@@ -1189,6 +1250,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if goBeforeReqFunctions.beforeImportFacebookFriendsFunction != nil {
 		allBeforeReqFunctions.beforeImportFacebookFriendsFunction = goBeforeReqFunctions.beforeImportFacebookFriendsFunction
 		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "importfacebookfriends"))
+	}
+	if goBeforeReqFunctions.beforeImportSteamFriendsFunction != nil {
+		allBeforeReqFunctions.beforeImportSteamFriendsFunction = goBeforeReqFunctions.beforeImportSteamFriendsFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "importsteamfriends"))
 	}
 	if goBeforeReqFunctions.beforeCreateGroupFunction != nil {
 		allBeforeReqFunctions.beforeCreateGroupFunction = goBeforeReqFunctions.beforeCreateGroupFunction
@@ -1382,6 +1447,18 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 		allBeforeReqFunctions.beforeGetUsersFunction = goBeforeReqFunctions.beforeGetUsersFunction
 		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "getusers"))
 	}
+	if goBeforeReqFunctions.beforeValidatePurchaseAppleFunction != nil {
+		allBeforeReqFunctions.beforeValidatePurchaseAppleFunction = goBeforeReqFunctions.beforeValidatePurchaseAppleFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "receiptvalidateapple"))
+	}
+	if goBeforeReqFunctions.beforeValidatePurchaseGoogleFunction != nil {
+		allBeforeReqFunctions.beforeValidatePurchaseGoogleFunction = goBeforeReqFunctions.beforeValidatePurchaseGoogleFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "receiptvalidategoogle"))
+	}
+	if goBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction != nil {
+		allBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction = goBeforeReqFunctions.beforeValidatePurchaseHuaweiFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "receiptvalidatehuawei"))
+	}
 	if goBeforeReqFunctions.beforeEventFunction != nil {
 		allBeforeReqFunctions.beforeEventFunction = goBeforeReqFunctions.beforeEventFunction
 		startupLogger.Info("Registered Go runtime Before custom events function invocation")
@@ -1397,6 +1474,9 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	}
 	if allAfterReqFunctions.afterSessionRefreshFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "sessionrefresh"))
+	}
+	if allAfterReqFunctions.afterSessionLogoutFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "sessionlogout"))
 	}
 	if allAfterReqFunctions.afterAuthenticateAppleFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "authenticateapple"))
@@ -1442,6 +1522,9 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	}
 	if allAfterReqFunctions.afterImportFacebookFriendsFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "importfacebookfriends"))
+	}
+	if allAfterReqFunctions.afterImportSteamFriendsFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "importsteamfriends"))
 	}
 	if allAfterReqFunctions.afterCreateGroupFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "creategroup"))
@@ -1587,6 +1670,15 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if allAfterReqFunctions.afterGetUsersFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime After function invocation", zap.String("id", "getusers"))
 	}
+	if allAfterReqFunctions.afterValidatePurchaseAppleFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "receiptvalidateapple"))
+	}
+	if allAfterReqFunctions.afterValidatePurchaseGoogleFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "receiptvalidategoogle"))
+	}
+	if allAfterReqFunctions.afterValidatePurchaseHuaweiFunction != nil {
+		startupLogger.Info("Registered JavaScript runtime Before function invocation", zap.String("id", "receiptvalidatehuawei"))
+	}
 	if allAfterReqFunctions.afterEventFunction != nil {
 		startupLogger.Info("Registered JavaScript runtime After custom events function invocation")
 	}
@@ -1603,6 +1695,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if luaAfterReqFunctions.afterSessionRefreshFunction != nil {
 		allAfterReqFunctions.afterSessionRefreshFunction = luaAfterReqFunctions.afterSessionRefreshFunction
 		startupLogger.Info("Registered Lua runtime After function invocation", zap.String("id", "sessionrefresh"))
+	}
+	if luaAfterReqFunctions.afterSessionLogoutFunction != nil {
+		allAfterReqFunctions.afterSessionLogoutFunction = luaAfterReqFunctions.afterSessionLogoutFunction
+		startupLogger.Info("Registered Lua runtime After function invocation", zap.String("id", "sessionlogout"))
 	}
 	if luaAfterReqFunctions.afterAuthenticateAppleFunction != nil {
 		allAfterReqFunctions.afterAuthenticateAppleFunction = luaAfterReqFunctions.afterAuthenticateAppleFunction
@@ -1663,6 +1759,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if luaAfterReqFunctions.afterImportFacebookFriendsFunction != nil {
 		allAfterReqFunctions.afterImportFacebookFriendsFunction = luaAfterReqFunctions.afterImportFacebookFriendsFunction
 		startupLogger.Info("Registered Lua runtime After function invocation", zap.String("id", "importfacebookfriends"))
+	}
+	if luaAfterReqFunctions.afterImportSteamFriendsFunction != nil {
+		allAfterReqFunctions.afterImportSteamFriendsFunction = luaAfterReqFunctions.afterImportSteamFriendsFunction
+		startupLogger.Info("Registered Lua runtime After function invocation", zap.String("id", "importsteamfriends"))
 	}
 	if luaAfterReqFunctions.afterCreateGroupFunction != nil {
 		allAfterReqFunctions.afterCreateGroupFunction = luaAfterReqFunctions.afterCreateGroupFunction
@@ -1852,6 +1952,18 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 		allAfterReqFunctions.afterGetUsersFunction = luaAfterReqFunctions.afterGetUsersFunction
 		startupLogger.Info("Registered Lua runtime After function invocation", zap.String("id", "getusers"))
 	}
+	if luaAfterReqFunctions.afterValidatePurchaseAppleFunction != nil {
+		allAfterReqFunctions.afterValidatePurchaseAppleFunction = luaAfterReqFunctions.afterValidatePurchaseAppleFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "receiptvalidateapple"))
+	}
+	if luaAfterReqFunctions.afterValidatePurchaseGoogleFunction != nil {
+		allAfterReqFunctions.afterValidatePurchaseGoogleFunction = luaAfterReqFunctions.afterValidatePurchaseGoogleFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "receiptvalidategoogle"))
+	}
+	if luaAfterReqFunctions.afterValidatePurchaseHuaweiFunction != nil {
+		allAfterReqFunctions.afterValidatePurchaseHuaweiFunction = luaAfterReqFunctions.afterValidatePurchaseHuaweiFunction
+		startupLogger.Info("Registered Lua runtime Before function invocation", zap.String("id", "receiptvalidatehuawei"))
+	}
 	if luaAfterReqFunctions.afterEventFunction != nil {
 		allAfterReqFunctions.afterEventFunction = luaAfterReqFunctions.afterEventFunction
 		startupLogger.Info("Registered Lua runtime After custom events function invocation")
@@ -1869,6 +1981,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if goAfterReqFunctions.afterSessionRefreshFunction != nil {
 		allAfterReqFunctions.afterSessionRefreshFunction = goAfterReqFunctions.afterSessionRefreshFunction
 		startupLogger.Info("Registered Go runtime After function invocation", zap.String("id", "sessionrefresh"))
+	}
+	if goAfterReqFunctions.afterSessionLogoutFunction != nil {
+		allAfterReqFunctions.afterSessionLogoutFunction = goAfterReqFunctions.afterSessionLogoutFunction
+		startupLogger.Info("Registered Go runtime After function invocation", zap.String("id", "sessionlogout"))
 	}
 	if goAfterReqFunctions.afterAuthenticateAppleFunction != nil {
 		allAfterReqFunctions.afterAuthenticateAppleFunction = goAfterReqFunctions.afterAuthenticateAppleFunction
@@ -1929,6 +2045,10 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 	if goAfterReqFunctions.afterImportFacebookFriendsFunction != nil {
 		allAfterReqFunctions.afterImportFacebookFriendsFunction = goAfterReqFunctions.afterImportFacebookFriendsFunction
 		startupLogger.Info("Registered Go runtime After function invocation", zap.String("id", "importfacebookfriends"))
+	}
+	if goAfterReqFunctions.afterImportSteamFriendsFunction != nil {
+		allAfterReqFunctions.afterImportSteamFriendsFunction = goAfterReqFunctions.afterImportSteamFriendsFunction
+		startupLogger.Info("Registered Go runtime After function invocation", zap.String("id", "importsteamfriends"))
 	}
 	if goAfterReqFunctions.afterCreateGroupFunction != nil {
 		allAfterReqFunctions.afterCreateGroupFunction = goAfterReqFunctions.afterCreateGroupFunction
@@ -2122,6 +2242,18 @@ func NewRuntime(logger, startupLogger *zap.Logger, db *sql.DB, jsonpbMarshaler *
 		allAfterReqFunctions.afterGetUsersFunction = goAfterReqFunctions.afterGetUsersFunction
 		startupLogger.Info("Registered Go runtime After function invocation", zap.String("id", "getusers"))
 	}
+	if goAfterReqFunctions.afterValidatePurchaseAppleFunction != nil {
+		allAfterReqFunctions.afterValidatePurchaseAppleFunction = goAfterReqFunctions.afterValidatePurchaseAppleFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "receiptvalidateapple"))
+	}
+	if goAfterReqFunctions.afterValidatePurchaseGoogleFunction != nil {
+		allAfterReqFunctions.afterValidatePurchaseGoogleFunction = goAfterReqFunctions.afterValidatePurchaseGoogleFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "receiptvalidategoogle"))
+	}
+	if goAfterReqFunctions.afterValidatePurchaseHuaweiFunction != nil {
+		allAfterReqFunctions.afterValidatePurchaseHuaweiFunction = goAfterReqFunctions.afterValidatePurchaseHuaweiFunction
+		startupLogger.Info("Registered Go runtime Before function invocation", zap.String("id", "receiptvalidatehuawei"))
+	}
 	if goAfterReqFunctions.afterEventFunction != nil {
 		allAfterReqFunctions.afterEventFunction = goAfterReqFunctions.afterEventFunction
 		startupLogger.Info("Registered Go runtime After custom events function invocation")
@@ -2312,6 +2444,14 @@ func (r *Runtime) AfterSessionRefresh() RuntimeAfterSessionRefreshFunction {
 	return r.afterReqFunctions.afterSessionRefreshFunction
 }
 
+func (r *Runtime) BeforeSessionLogout() RuntimeBeforeSessionLogoutFunction {
+	return r.beforeReqFunctions.beforeSessionLogoutFunction
+}
+
+func (r *Runtime) AfterSessionLogout() RuntimeAfterSessionLogoutFunction {
+	return r.afterReqFunctions.afterSessionLogoutFunction
+}
+
 func (r *Runtime) BeforeAuthenticateApple() RuntimeBeforeAuthenticateAppleFunction {
 	return r.beforeReqFunctions.beforeAuthenticateAppleFunction
 }
@@ -2430,6 +2570,14 @@ func (r *Runtime) BeforeImportFacebookFriends() RuntimeBeforeImportFacebookFrien
 
 func (r *Runtime) AfterImportFacebookFriends() RuntimeAfterImportFacebookFriendsFunction {
 	return r.afterReqFunctions.afterImportFacebookFriendsFunction
+}
+
+func (r *Runtime) BeforeImportSteamFriends() RuntimeBeforeImportSteamFriendsFunction {
+	return r.beforeReqFunctions.beforeImportSteamFriendsFunction
+}
+
+func (r *Runtime) AfterImportSteamFriends() RuntimeAfterImportSteamFriendsFunction {
+	return r.afterReqFunctions.afterImportSteamFriendsFunction
 }
 
 func (r *Runtime) BeforeCreateGroup() RuntimeBeforeCreateGroupFunction {
@@ -2814,6 +2962,30 @@ func (r *Runtime) BeforeGetUsers() RuntimeBeforeGetUsersFunction {
 
 func (r *Runtime) AfterGetUsers() RuntimeAfterGetUsersFunction {
 	return r.afterReqFunctions.afterGetUsersFunction
+}
+
+func (r *Runtime) BeforeValidatePurchaseApple() RuntimeBeforeValidatePurchaseAppleFunction {
+	return r.beforeReqFunctions.beforeValidatePurchaseAppleFunction
+}
+
+func (r *Runtime) AfterValidatePurchaseApple() RuntimeAfterValidatePurchaseAppleFunction {
+	return r.afterReqFunctions.afterValidatePurchaseAppleFunction
+}
+
+func (r *Runtime) BeforeValidatePurchaseGoogle() RuntimeBeforeValidatePurchaseGoogleFunction {
+	return r.beforeReqFunctions.beforeValidatePurchaseGoogleFunction
+}
+
+func (r *Runtime) AfterValidatePurchaseGoogle() RuntimeAfterValidatePurchaseGoogleFunction {
+	return r.afterReqFunctions.afterValidatePurchaseGoogleFunction
+}
+
+func (r *Runtime) BeforeValidatePurchaseHuawei() RuntimeBeforeValidatePurchaseHuaweiFunction {
+	return r.beforeReqFunctions.beforeValidatePurchaseHuaweiFunction
+}
+
+func (r *Runtime) AfterValidatePurchaseHuawei() RuntimeAfterValidatePurchaseHuaweiFunction {
+	return r.afterReqFunctions.afterValidatePurchaseHuaweiFunction
 }
 
 func (r *Runtime) BeforeEvent() RuntimeBeforeEventFunction {

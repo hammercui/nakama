@@ -3,6 +3,78 @@ All notable changes to this project are documented below.
 
 The format is based on [keep a changelog](http://keepachangelog.com) and this project uses [semantic versioning](http://semver.org).
 
+## [3.2.1] - 2021-04-19
+### Changed
+- A user's online indicator now observes the status mode rather than just socket connectivity.
+- Update sql-migrate library to a32ed26.
+- Rework some migrations for better compatibility with different database engines.
+- Update to Protobuf v1.5.2, GRPC v1.37.0, and GRPC-Gateway v2.3.0 releases.
+- Update to Bleve v2.0.3 release.
+- Various other dependency updates.
+
+### Fixed
+- Fix user scoping in Nakama Console purchase listing view.
+
+## [3.2.0] - 2021-04-14
+### Added
+- New API to logout and intercept logouts with session and refresh tokens.
+- Add a leave reason to presence events to handle transient disconnects more easily.
+- New API for IAP validation with Apple App Store, Google Play Store, and Huawei AppGallery.
+
+### Changed
+- Improve struct field alignment on types in the social package.
+- Improve memory re-use within the matchmaker and match registry structures.
+- Support Facebook Limited Login tokens received into the standard Facebook login/link/unlink functions.
+- Update JS VM to newer version. This resolves an issue with resizing some JS arrays.
+- Build with Go 1.16.3 release.
+
+### Fixed
+- Matchmaker entries which were only partially matched together could not combine with larger player counts.
+- Fix bad inputs parsed in some before/after hook executions made from the API Explorer in the Console.
+- Correctly return Unix timestamps in JS runtime functions returning users/accounts data.
+
+## [3.1.2] - 2021-03-03
+### Changed
+- Sort match listings to show newer created matches first by default.
+- Loosen status follow input validation and constraints to ignore unrecognised user IDs and usernames.
+- Build with Go 1.16.0 release.
+- Do not import Steam friends by default on Steam authentication.
+- Do not import Facebook friends by default on Facebook authentication.
+- Improve match label update batching semantics.
+- Account object returned by some JS runtime functions are not flattened with user values anymore.
+
+### Fixed
+- Fix an issue in the JS runtime that would prevent the matchmaker matched callback to function correctly.
+- Allow the console API to return large responses based on the configured max message size.
+- Allow JS runtime initializer functions to be invoked inside a try/catch block.
+- Fix Tournament Reset function hook schedules calcuated on first write if the end active time must be computed with no reset schedule.
+
+## [3.1.1] - 2021-02-15
+### Changed
+- Go runtime logger now identifies the file/line in the runtime as the caller rather than the logger.
+- Build with Go 1.15.8 release.
+- Use a newer CA certificates package within the Docker containers.
+
+### Fixed
+- Fix an issue that prevented the JavaScript runtime hooks to be invoked correctly.
+- Fix the delete button not working in the console leaderboard listing.
+- GetUsers can fetch user accounts by Facebook ID the same as in the client API.
+
+## [3.1.0] - 2021-02-04
+### Added
+- New APIs to import Steam friends into the social graph.
+
+### Changed
+- Improve output of "nakama migrate status" command when database contains unknown migrations.
+- The socket status flag is now parsed as case-insensitive.
+- Build with Go 1.15.7 release.
+
+### Fixed
+- Fix an issue with the JS runtime multiUpdate function.
+- Fix an issue where the JS runtime would call the InitModule function twice.
+- Fix how the JS runtime invokes matchmakerMatched and leaderboard/tournament related hooks.
+- Fix JS VM not being put back into the pool after an RPC call.
+
 ## [3.0.0] - 2021-01-16
 
 This is a major release of the server but **fully backwards compatible** with the 2.x releases.

@@ -16,21 +16,24 @@ package migrate
 
 import (
 	"database/sql"
+	"embed"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/gobuffalo/packr"
-	"github.com/heroiclabs/nakama/v3/server"
 	"github.com/jackc/pgx"
 	_ "github.com/jackc/pgx/stdlib" // Blank import to register SQL driver
-	"github.com/rubenv/sql-migrate"
+	migrate "github.com/rubenv/sql-migrate"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/heroiclabs/nakama/v3/server"
 )
 
 const (
@@ -40,9 +43,13 @@ const (
 	defaultLimit             = -1
 )
 
+//go:embed sql/*
+var sqlMigrateFS embed.FS
+
 type statusRow struct {
 	ID        string
 	Migrated  bool
+	Unknown   bool
 	AppliedAt time.Time
 }
 
@@ -56,12 +63,26 @@ type migrationService struct {
 
 func StartupCheck(logger *zap.Logger, db *sql.DB) {
 	migrate.SetTable(migrationTable)
+	migrate.SetIgnoreUnknown(true)
 
-	migrationBox := packr.NewBox("./sql") // path must be string not a variable for packr to understand
 	ms := &migrate.AssetMigrationSource{
-		Asset: migrationBox.Find,
+		Asset: func(path string) ([]byte, error) {
+			f, err := sqlMigrateFS.Open(filepath.Join("sql", path))
+			if err != nil {
+				return nil, err
+			}
+			return ioutil.ReadAll(f)
+		},
 		AssetDir: func(path string) ([]string, error) {
-			return migrationBox.List(), nil
+			entries, err := sqlMigrateFS.ReadDir(filepath.Join("sql", path))
+			if err != nil {
+				return nil, err
+			}
+			files := make([]string, 0, len(entries))
+			for _, dirEntry := range entries {
+				files = append(files, dirEntry.Name())
+			}
+			return files, nil
 		},
 	}
 
@@ -89,12 +110,26 @@ func Parse(args []string, tmpLogger *zap.Logger) {
 	}
 
 	migrate.SetTable(migrationTable)
-	migrationBox := packr.NewBox("./sql") // path must be string not a variable for packr to understand
+	migrate.SetIgnoreUnknown(true)
 	ms := &migrationService{
 		migrations: &migrate.AssetMigrationSource{
-			Asset: migrationBox.Find,
+			Asset: func(path string) ([]byte, error) {
+				f, err := sqlMigrateFS.Open(filepath.Join("sql", path))
+				if err != nil {
+					return nil, err
+				}
+				return ioutil.ReadAll(f)
+			},
 			AssetDir: func(path string) ([]string, error) {
-				return migrationBox.List(), nil
+				entries, err := sqlMigrateFS.ReadDir(filepath.Join("sql", path))
+				if err != nil {
+					return nil, err
+				}
+				files := make([]string, 0, len(entries))
+				for _, dirEntry := range entries {
+					files = append(files, dirEntry.Name())
+				}
+				return files, nil
 			},
 		},
 	}
@@ -247,9 +282,16 @@ func (ms *migrationService) status(logger *zap.Logger) {
 		}
 	}
 
+	unknownMigrations := make([]string, 0)
 	for _, r := range records {
-		rows[r.Id].Migrated = true
-		rows[r.Id].AppliedAt = r.AppliedAt
+		sr, ok := rows[r.Id]
+		if !ok {
+			// Unknown migration found in database, perhaps from a newer server version.
+			unknownMigrations = append(unknownMigrations, r.Id)
+			continue
+		}
+		sr.Migrated = true
+		sr.AppliedAt = r.AppliedAt
 	}
 
 	for _, m := range migrations {
@@ -258,6 +300,9 @@ func (ms *migrationService) status(logger *zap.Logger) {
 		} else {
 			logger.Info(m.Id, zap.String("applied", ""))
 		}
+	}
+	for _, m := range unknownMigrations {
+		logger.Warn(m, zap.String("applied", "unknown migration, check if database is set up for a newer server version"))
 	}
 }
 

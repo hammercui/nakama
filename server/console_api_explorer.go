@@ -111,13 +111,13 @@ func (s *ConsoleServer) CallApiEndpoint(ctx context.Context, in *console.CallApi
 func (s *ConsoleServer) extractApiCallContext(ctx context.Context, in *console.CallApiEndpointRequest, userIdOptional bool) (context.Context, error) {
 	var callCtx context.Context
 	if strings.HasPrefix(in.Method, "Authenticate") {
-		callCtx = ctx
+		callCtx = context.WithValue(ctx, ctxFullMethodKey{}, "/nakama.api.Nakama/"+in.Method)
 	} else if in.UserId == "" {
 		if !userIdOptional {
 			s.logger.Error("Error calling a built-in RPC function without a user_id.", zap.String("method", in.Method))
 			return nil, status.Error(codes.InvalidArgument, "Built-in RPC functions require a user_id.")
 		} else {
-			callCtx = ctx
+			callCtx = context.WithValue(ctx, ctxFullMethodKey{}, "/nakama.api.Nakama/"+in.Method)
 		}
 	} else {
 		row := s.db.QueryRowContext(ctx, "SELECT username FROM users WHERE id = $1", in.UserId)
@@ -140,18 +140,18 @@ func (s *ConsoleServer) extractApiCallContext(ctx context.Context, in *console.C
 		callCtx = context.WithValue(callCtx, ctxUsernameKey{}, dbUsername)
 		callCtx = context.WithValue(callCtx, ctxVarsKey{}, map[string]string{})
 		callCtx = context.WithValue(callCtx, ctxExpiryKey{}, time.Now().Add(time.Duration(s.config.GetSession().TokenExpirySec)*time.Second).Unix())
+		callCtx = context.WithValue(callCtx, ctxFullMethodKey{}, "/nakama.api.Nakama/"+in.Method)
 	}
 	return callCtx, nil
 }
 
 func (s *ConsoleServer) ListApiEndpoints(ctx context.Context, _ *empty.Empty) (*console.ApiEndpointList, error) {
-
-	endpointNames := make([]string, 0)
+	endpointNames := make([]string, 0, len(s.rpcMethodCache.endpoints))
 	for name := range s.rpcMethodCache.endpoints {
 		endpointNames = append(endpointNames, string(name))
 	}
 	sort.Strings(endpointNames)
-	var endpoints []*console.ApiEndpointDescriptor
+	endpoints := make([]*console.ApiEndpointDescriptor, 0, len(endpointNames))
 	for _, name := range endpointNames {
 		endpoint := s.rpcMethodCache.endpoints[MethodName(name)]
 		endpoints = append(endpoints, &console.ApiEndpointDescriptor{
@@ -160,12 +160,12 @@ func (s *ConsoleServer) ListApiEndpoints(ctx context.Context, _ *empty.Empty) (*
 		})
 	}
 
-	rpcs := make([]string, 0)
+	rpcs := make([]string, 0, len(s.rpcMethodCache.rpcs))
 	for name := range s.rpcMethodCache.rpcs {
 		rpcs = append(rpcs, string(name))
 	}
 	sort.Strings(rpcs)
-	var rpcEndpoints []*console.ApiEndpointDescriptor
+	rpcEndpoints := make([]*console.ApiEndpointDescriptor, 0, len(rpcs))
 	for _, name := range rpcs {
 		endpoint := s.rpcMethodCache.rpcs[MethodName(name)]
 		rpcEndpoints = append(rpcEndpoints, &console.ApiEndpointDescriptor{

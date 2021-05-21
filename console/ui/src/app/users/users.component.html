@@ -1,7 +1,7 @@
 <h2 class="pb-4">User Management</h2>
 
 <ngb-alert *ngIf="error" type="danger" [dismissible]="false">
-  <img src="/assets/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
+  <img src="/static/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
   <h6 class="mr-2 d-inline font-weight-bold">An error occurred: {{error}}</h6>
 </ngb-alert>
 
@@ -39,7 +39,7 @@
   <div class="d-flex flex-wrap flex-row">
     <div class="col col-md-3 p-4 flex-fill flex-grow-1">
       <div class="d-flex align-items-center mb-3">
-        <img class="mr-2" src="/assets/svg/role-admin.svg" alt="" width="30" height="">
+        <img class="mr-2" src="/static/svg/role-admin.svg" alt="" width="30" height="">
         <h6 class="m-0 font-weight-bold">Administrator</h6>
       </div>
       <small>
@@ -49,7 +49,7 @@
 
     <div class="col col-md-3 p-4 flex-fill flex-grow-1">
       <div class="d-flex align-items-center mb-3">
-        <img class="mr-2" src="/assets/svg/role-developer.svg" alt="" width="30" height="">
+        <img class="mr-2" src="/static/svg/role-developer.svg" alt="" width="30" height="">
         <h6 class="m-0 font-weight-bold">Developer</h6>
       </div>
       <small>
@@ -59,7 +59,7 @@
 
     <div class="col col-md-3 p-4 flex-fill flex-grow-1">
       <div class="d-flex align-items-center mb-3">
-        <img class="mr-2" src="/assets/svg/role-maintainer.svg" alt="" width="30" height="">
+        <img class="mr-2" src="/static/svg/role-maintainer.svg" alt="" width="30" height="">
         <h6 class="m-0 font-weight-bold">Maintainer</h6>
       </div>
       <small>
@@ -69,7 +69,7 @@
 
     <div class="col col-md-3 p-4 flex-fill flex-grow-1">
       <div class="d-flex align-items-center mb-3">
-        <img class="mr-2" src="/assets/svg/role-viewonly.svg" alt="" width="30" height="">
+        <img class="mr-2" src="/static/svg/role-viewonly.svg" alt="" width="30" height="">
         <h6 class="m-0 font-weight-bold">View Only</h6>
       </div>
       <small>
@@ -80,7 +80,7 @@
 </ngb-alert>
 
 <ngb-alert *ngIf="userCreateError" type="danger" [dismissible]="false">
-  <img src="/assets/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
+  <img src="/static/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
   <h6 class="mr-2 d-inline font-weight-bold">An error occurred:</h6>
   <p class="mb-0 pl-4">{{userCreateError}}</p>
 </ngb-alert>
@@ -89,40 +89,46 @@
   <form [formGroup]="createUserForm" (ngSubmit)="addUser()">
     <div class="row no-gutters">
       <div class="col d-flex justify-content-between align-items-center">
-        <div class="col-md-6">
+        <div class="col-md-3">
           <label class="d-inline" for="email">Email</label>
         </div>
-        <input type="email" id="email" class="form-control my-2" placeholder="email@example.com" required formControlName="email" [ngClass]="{'is-invalid': f.email.dirty && f.email.errors}">
-        <div class="invalid-tooltip" [hidden]="f.email.disabled || f.email.valid || f.email.pristine">Email is required</div>
+        <div class="col-md-9 ml-0 p-0">
+          <input type="email" id="email" class="form-control" placeholder="email@example.com" required formControlName="email" [ngClass]="{'is-invalid': f.email.dirty && f.email.errors}">
+          <div class="invalid-tooltip" [hidden]="f.email.disabled || f.email.valid || f.email.pristine">Email is required</div>
+        </div>
       </div>
     </div>
 
     <div class="row no-gutters">
       <div class="col d-flex justify-content-between align-items-center">
-        <div class="col-md-6">
+        <div class="col-md-3">
           <label class="d-inline" for="username">Username</label>
         </div>
-        <input type="text" id="username" class="form-control my-2" placeholder="Username" required formControlName="username" [ngClass]="{'is-invalid': f.username.dirty && f.username.errors}">
-        <div class="invalid-tooltip" [hidden]="f.username.disabled || f.username.valid || f.username.pristine">Username is required</div>
+        <div class="col-md-9 ml-0 p-0">
+          <input type="text" id="username" class="form-control" placeholder="Username" required formControlName="username" [ngClass]="{'is-invalid': f.username.dirty && f.username.errors}">
+          <div class="invalid-tooltip" [hidden]="f.username.disabled || f.username.valid || f.username.pristine">Username is required</div>
+        </div>
       </div>
     </div>
 
     <div class="row no-gutters">
       <div class="col d-flex justify-content-between align-items-center">
-        <div class="col-md-6">
+        <div class="col-md-3">
           <label class="d-inline" for="password">Password</label>
         </div>
-        <input type="password" id="password" class="form-control my-2" placeholder="Password" required formControlName="password" [ngClass]="{'is-invalid': f.password.dirty && f.password.errors}">
-        <div class="invalid-tooltip" [hidden]="f.password.disabled || f.password.valid || f.password.pristine">Password is required, must be 8 chars or longer and consist of at least a capital letter, a small letter and a number.</div>
+        <div class="col-md-9 ml-0 p-0">
+          <input type="password" id="password" class="form-control" placeholder="Password" required formControlName="password" [ngClass]="{'is-invalid': f.password.dirty && f.password.errors}">
+          <div class="invalid-tooltip" [hidden]="f.password.disabled || f.password.valid || f.password.pristine">Password is required, must be 8 chars or longer and consist of at least a capital letter, a small letter and a number.</div>
+        </div>
       </div>
     </div>
 
-    <div class="row  no-gutters add-border-single-row-bottom mb-4 py-3">
+    <div class="row no-gutters">
       <div class="col d-flex justify-content-between align-items-center">
-        <div class="col-md-6 ml-0">
+        <div class="col-md-3">
           <label class="d-inline">Role</label>
         </div>
-        <div class="col-md-6 ml-0 p-0">
+        <div class="col-md-9 ml-0 p-0">
           <div class="btn-group">
             <button disabled class="btn btn-outline-dark disabled">
               <span [hidden]="f.role.value !== +adminRole">Administrator</span>
@@ -141,6 +147,18 @@
             </div>
           </div>
           <div class="invalid-tooltip" [hidden]="f.role.disabled || f.role.valid || f.role.pristine">Role is required</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row no-gutters add-border-single-row-bottom mb-4">
+      <div class="col d-flex align-items-center">
+        <div class="col-md-3"></div>
+        <div class="col-md-9 ml-0 p-0">
+          <div class="custom-control custom-checkbox">
+            <input type="checkbox" id="newsletter" class="custom-control-input mr-2 my-2" formControlName="newsletter"/>
+            <label class="form-check-label custom-control-label" for="newsletter">Subscribe to Heroic Labs' newsletters to receive latest updates to Nakama and other news.</label>
+          </div>
         </div>
       </div>
     </div>

@@ -16,13 +16,13 @@ package server
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"time"
 	"unicode/utf8"
-
-	"database/sql"
 
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/ptypes/timestamp"
@@ -30,7 +30,6 @@ import (
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"github.com/jackc/pgx/pgtype"
-	"github.com/pkg/errors"
 	"go.uber.org/zap"
 )
 
@@ -199,7 +198,7 @@ func (p *Pipeline) channelJoin(logger *zap.Logger, session Session, envelope *rt
 		Persistence: incoming.Persistence == nil || incoming.Persistence.Value,
 		Username:    session.Username(),
 	}
-	success, isNew := p.tracker.Track(session.ID(), stream, session.UserID(), meta, false)
+	success, isNew := p.tracker.Track(session.Context(), session.ID(), stream, session.UserID(), meta, false)
 	if !success {
 		session.Send(&rtapi.Envelope{Cid: envelope.Cid, Message: &rtapi.Envelope_Error{Error: &rtapi.Error{
 			Code:    int32(rtapi.Error_RUNTIME_EXCEPTION),

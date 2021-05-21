@@ -20,15 +20,15 @@ import (
 	"database/sql"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"net"
 	"net/http"
 	"net/http/pprof"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
-	jwt "github.com/dgrijalva/jwt-go"
+	"github.com/dgrijalva/jwt-go"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/gorilla/handlers"
@@ -66,6 +66,7 @@ type ConsoleServer struct {
 	config               Config
 	tracker              Tracker
 	router               MessageRouter
+	sessionCache         SessionCache
 	matchRegistry        MatchRegistry
 	statusHandler        StatusHandler
 	runtimeInfo          *RuntimeInfo
@@ -79,9 +80,10 @@ type ConsoleServer struct {
 	api                  *ApiServer
 	rpcMethodCache       *rpcReflectCache
 	cookie               string
+	httpClient           *http.Client
 }
 
-func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.DB, config Config, tracker Tracker, router MessageRouter, statusHandler StatusHandler, runtimeInfo *RuntimeInfo, matchRegistry MatchRegistry, configWarnings map[string]string, serverVersion string, leaderboardCache LeaderboardCache, leaderboardRankCache LeaderboardRankCache, api *ApiServer, cookie string) *ConsoleServer {
+func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.DB, config Config, tracker Tracker, router MessageRouter, sessionCache SessionCache, statusHandler StatusHandler, runtimeInfo *RuntimeInfo, matchRegistry MatchRegistry, configWarnings map[string]string, serverVersion string, leaderboardCache LeaderboardCache, leaderboardRankCache LeaderboardRankCache, api *ApiServer, cookie string) *ConsoleServer {
 	var gatewayContextTimeoutMs string
 	if config.GetConsole().IdleTimeoutMs > 500 {
 		// Ensure the GRPC Gateway timeout is just under the idle timeout (if possible) to ensure it has priority.
@@ -105,6 +107,7 @@ func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.D
 		config:               config,
 		tracker:              tracker,
 		router:               router,
+		sessionCache:         sessionCache,
 		matchRegistry:        matchRegistry,
 		statusHandler:        statusHandler,
 		configWarnings:       configWarnings,
@@ -116,6 +119,7 @@ func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.D
 		leaderboardRankCache: leaderboardRankCache,
 		api:                  api,
 		cookie:               cookie,
+		httpClient:           &http.Client{Timeout: 5 * time.Second},
 	}
 
 	if err := s.initRpcMethodCache(); err != nil {
@@ -155,7 +159,10 @@ func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.D
 		dialAddr = fmt.Sprintf("%v:%d", config.GetConsole().Address, config.GetConsole().Port-3)
 	}
 	dialOpts := []grpc.DialOption{
-		grpc.WithDefaultCallOptions(grpc.MaxCallSendMsgSize(int(config.GetConsole().MaxMessageSizeBytes))),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallSendMsgSize(int(config.GetConsole().MaxMessageSizeBytes)),
+			grpc.MaxCallRecvMsgSize(math.MaxInt32),
+		),
 		grpc.WithInsecure(),
 	}
 	if err := console.RegisterConsoleHandlerFromEndpoint(ctx, grpcGateway, dialAddr, dialOpts); err != nil {
@@ -173,8 +180,11 @@ func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.D
 
 	// pprof routes
 	grpcGatewayRouter.Handle("/debug/pprof/", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Index)))
-	grpcGatewayRouter.Handle("/debug/pprof/{profile}", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Index)))
+	grpcGatewayRouter.Handle("/debug/pprof/cmdline", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Cmdline)))
+	grpcGatewayRouter.Handle("/debug/pprof/profile", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Profile)))
 	grpcGatewayRouter.Handle("/debug/pprof/symbol", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Symbol)))
+	grpcGatewayRouter.Handle("/debug/pprof/trace", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Trace)))
+	grpcGatewayRouter.Handle("/debug/pprof/{profile}", adminBasicAuth(config.GetConsole())(http.HandlerFunc(pprof.Index)))
 
 	// Enable max size check on requests coming arriving the gateway.
 	// Enable compression on responses sent by the gateway.
@@ -274,35 +284,40 @@ func StartConsoleServer(logger *zap.Logger, startupLogger *zap.Logger, db *sql.D
 }
 
 func registerDashboardHandlers(logger *zap.Logger, router *mux.Router) {
+	indexFn := func(w http.ResponseWriter, r *http.Request) {
+		indexFile, err := console.UIFS.Open("index.html")
+		if err != nil {
+			logger.Error("Failed to open index file.", zap.Error(err))
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		indexBytes, err := ioutil.ReadAll(indexFile)
+		if err != nil {
+			logger.Error("Failed to read index file.", zap.Error(err))
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		w.Header().Add("Cache-Control", "no-cache")
+		w.Write(indexBytes)
+		return
+	}
+
+	router.Path("/").HandlerFunc(indexFn)
 	router.PathPrefix("/").HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// get the absolute path to prevent directory traversal
-		path := filepath.Join("/ui", r.URL.Path) // no slash needed because it already comes from the root
-		logger = logger.With(zap.String("url_path", r.URL.Path), zap.String("path", path))
+		path := r.URL.Path
+		logger = logger.With(zap.String("path", path))
 
 		// check whether a file exists at the given path
-		if console.BoxFS.Has(path) {
+		if _, err := console.UIFS.Open(path); err == nil {
 			// otherwise, use http.FileServer to serve the static dir
 			r.URL.Path = path // override the path with the prefixed path
 			console.UI.ServeHTTP(w, r)
 			return
 		} else {
-			indexFile, err := console.BoxFS.Open("ui/index.html")
-			if err != nil {
-				logger.Error("Failed to open index file.", zap.Error(err))
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-
-			indexBytes, err := ioutil.ReadAll(indexFile)
-			if err != nil {
-				logger.Error("Failed to read index file.", zap.Error(err))
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-
-			w.Header().Add("Cache-Control", "no-cache")
-			w.Write(indexBytes)
-			return
+			indexFn(w, r)
 		}
 	})
 }
@@ -372,6 +387,7 @@ func checkAuth(ctx context.Context, config Config, auth string) (context.Context
 			return ctx, false
 		}
 
+		ctx = context.WithValue(context.WithValue(context.WithValue(ctx, ctxConsoleRoleKey{}, console.UserRole_USER_ROLE_ADMIN), ctxConsoleUsernameKey{}, username), ctxConsoleEmailKey{}, "")
 		// Basic authentication successful.
 		return ctx, true
 	} else if strings.HasPrefix(auth, bearerPrefix) {

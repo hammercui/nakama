@@ -17,6 +17,7 @@ package server
 import (
 	"net"
 	"net/http"
+	"strconv"
 
 	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/jsonpb"
@@ -24,7 +25,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func NewSocketWsAcceptor(logger *zap.Logger, config Config, sessionRegistry SessionRegistry, matchmaker Matchmaker, tracker Tracker, metrics *Metrics, runtime *Runtime, jsonpbMarshaler *jsonpb.Marshaler, jsonpbUnmarshaler *jsonpb.Unmarshaler, pipeline *Pipeline) func(http.ResponseWriter, *http.Request) {
+func NewSocketWsAcceptor(logger *zap.Logger, config Config, sessionRegistry SessionRegistry, sessionCache SessionCache, statusRegistry *StatusRegistry, matchmaker Matchmaker, tracker Tracker, metrics *Metrics, runtime *Runtime, jsonpbMarshaler *jsonpb.Marshaler, jsonpbUnmarshaler *jsonpb.Unmarshaler, pipeline *Pipeline) func(http.ResponseWriter, *http.Request) {
 	upgrader := &websocket.Upgrader{
 		ReadBufferSize:  config.GetSocket().ReadBufferSizeBytes,
 		WriteBufferSize: config.GetSocket().WriteBufferSizeBytes,
@@ -59,17 +60,10 @@ func NewSocketWsAcceptor(logger *zap.Logger, config Config, sessionRegistry Sess
 			http.Error(w, "Missing or invalid token", 401)
 			return
 		}
-		userID, username, vars, expiry, ok := parseToken([]byte(config.GetSession().EncryptionKey), token)
-		if !ok {
+		userID, username, vars, expiry, _, ok := parseToken([]byte(config.GetSession().EncryptionKey), token)
+		if !ok || !sessionCache.IsValidSession(userID, expiry, token) {
 			http.Error(w, "Missing or invalid token", 401)
 			return
-		}
-
-		clientIP, clientPort := extractClientAddressFromRequest(logger, r)
-
-		status := false
-		if r.URL.Query().Get("status") == "true" {
-			status = true
 		}
 
 		// Upgrade to WebSocket.
@@ -80,21 +74,36 @@ func NewSocketWsAcceptor(logger *zap.Logger, config Config, sessionRegistry Sess
 			return
 		}
 
+		clientIP, clientPort := extractClientAddressFromRequest(logger, r)
+		status, _ := strconv.ParseBool(r.URL.Query().Get("status"))
 		sessionID := uuid.Must(sessionIdGen.NewV1())
 
 		// Mark the start of the session.
 		metrics.CountWebsocketOpened(1)
 
 		// Wrap the connection for application handling.
-		session := NewSessionWS(logger, config, format, sessionID, userID, username, vars, expiry, clientIP, clientPort, jsonpbMarshaler, jsonpbUnmarshaler, conn, sessionRegistry, matchmaker, tracker, metrics, pipeline, runtime)
+		session := NewSessionWS(logger, config, format, sessionID, userID, username, vars, expiry, clientIP, clientPort, jsonpbMarshaler, jsonpbUnmarshaler, conn, sessionRegistry, statusRegistry, matchmaker, tracker, metrics, pipeline, runtime)
 
 		// Add to the session registry.
 		sessionRegistry.Add(session)
 
-		// Register initial presences for this session.
-		tracker.Track(session.ID(), PresenceStream{Mode: StreamModeNotifications, Subject: session.UserID()}, session.UserID(), PresenceMeta{Format: session.Format(), Username: session.Username(), Hidden: true}, true)
+		// Register initial status tracking and presence(s) for this session.
+		statusRegistry.Follow(sessionID, map[uuid.UUID]struct{}{userID: {}})
 		if status {
-			tracker.Track(session.ID(), PresenceStream{Mode: StreamModeStatus, Subject: session.UserID()}, session.UserID(), PresenceMeta{Format: session.Format(), Username: session.Username(), Status: ""}, false)
+			// Both notification and status presence.
+			tracker.TrackMulti(session.Context(), sessionID, []*TrackerOp{
+				{
+					Stream: PresenceStream{Mode: StreamModeNotifications, Subject: userID},
+					Meta:   PresenceMeta{Format: format, Username: username, Hidden: true},
+				},
+				{
+					Stream: PresenceStream{Mode: StreamModeStatus, Subject: userID},
+					Meta:   PresenceMeta{Format: format, Username: username, Status: ""},
+				},
+			}, userID, true)
+		} else {
+			// Only notification presence.
+			tracker.Track(session.Context(), sessionID, PresenceStream{Mode: StreamModeNotifications, Subject: userID}, userID, PresenceMeta{Format: format, Username: username, Hidden: true}, true)
 		}
 
 		// Allow the server to begin processing incoming messages from this session.

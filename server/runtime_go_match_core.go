@@ -19,6 +19,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
+
 	"github.com/gofrs/uuid"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"github.com/heroiclabs/nakama-common/runtime"
@@ -38,14 +40,15 @@ type RuntimeGoMatchCore struct {
 
 	match runtime.Match
 
-	id       uuid.UUID
-	node     string
-	module   string
-	tickRate int
-	stopped  *atomic.Bool
-	idStr    string
-	stream   PresenceStream
-	label    *atomic.String
+	id         uuid.UUID
+	node       string
+	module     string
+	tickRate   int
+	createTime int64
+	stopped    *atomic.Bool
+	idStr      string
+	stream     PresenceStream
+	label      *atomic.String
 
 	runtimeLogger runtime.Logger
 	db            *sql.DB
@@ -72,11 +75,12 @@ func NewRuntimeGoMatchCore(logger *zap.Logger, module string, matchRegistry Matc
 
 		match: match,
 
-		id:      id,
-		node:    node,
-		stopped: stopped,
-		idStr:   fmt.Sprintf("%v.%v", id.String(), node),
-		module:  module,
+		id:         id,
+		node:       node,
+		stopped:    stopped,
+		idStr:      fmt.Sprintf("%v.%v", id.String(), node),
+		module:     module,
+		createTime: time.Now().UTC().UnixNano() / int64(time.Millisecond),
 		stream: PresenceStream{
 			Mode:    StreamModeMatchAuthoritative,
 			Subject: id,
@@ -104,7 +108,7 @@ func (r *RuntimeGoMatchCore) MatchInit(presenceList *MatchPresenceList, deferMes
 	}
 	r.tickRate = tickRate
 
-	if err := r.matchRegistry.UpdateMatchLabel(r.id, r.tickRate, r.module, label); err != nil {
+	if err := r.matchRegistry.UpdateMatchLabel(r.id, r.tickRate, r.module, label, r.createTime); err != nil {
 		return nil, 0, err
 	}
 	r.label.Store(label)
@@ -191,8 +195,16 @@ func (r *RuntimeGoMatchCore) Label() string {
 	return r.label.Load()
 }
 
+func (r *RuntimeGoMatchCore) TickRate() int {
+	return r.tickRate
+}
+
 func (r *RuntimeGoMatchCore) HandlerName() string {
 	return r.module
+}
+
+func (r *RuntimeGoMatchCore) CreateTime() int64 {
+	return r.createTime
 }
 
 func (r *RuntimeGoMatchCore) Cancel() {
@@ -248,7 +260,7 @@ func (r *RuntimeGoMatchCore) validateBroadcast(opCode int64, data []byte, presen
 		presenceIDs = make([]*PresenceID, size)
 		for i, presence := range presences {
 			if presence == nil {
-				continue
+				return nil, nil, errors.New("Presence was nil")
 			}
 
 			sessionID, err := uuid.FromString(presence.GetSessionId())
@@ -287,6 +299,10 @@ func (r *RuntimeGoMatchCore) validateBroadcast(opCode int64, data []byte, presen
 	if presenceIDs != nil {
 		// Ensure specific presences actually exist to prevent sending bogus messages to arbitrary users.
 		if len(presenceIDs) == 1 {
+			if presences == nil {
+				// Should not happen.
+				return nil, nil, nil
+			}
 			// Shorter validation cycle if there is only one intended recipient.
 			_, err := uuid.FromString(presences[0].GetUserId())
 			if err != nil {
@@ -298,26 +314,7 @@ func (r *RuntimeGoMatchCore) validateBroadcast(opCode int64, data []byte, presen
 			}
 		} else {
 			// Validate multiple filtered recipients.
-			actualPresenceIDs := r.presenceList.ListPresenceIDs()
-			for i := 0; i < len(presenceIDs); i++ {
-				found := false
-				presenceID := presenceIDs[i]
-				for j := 0; j < len(actualPresenceIDs); j++ {
-					if actual := actualPresenceIDs[j]; presenceID.SessionID == actual.SessionID && presenceID.Node == actual.Node {
-						// If it matches, drop it.
-						actualPresenceIDs[j] = actualPresenceIDs[len(actualPresenceIDs)-1]
-						actualPresenceIDs = actualPresenceIDs[:len(actualPresenceIDs)-1]
-						found = true
-						break
-					}
-				}
-				if !found {
-					// If this presence wasn't in the filters, it's not needed.
-					presenceIDs[i] = presenceIDs[len(presenceIDs)-1]
-					presenceIDs = presenceIDs[:len(presenceIDs)-1]
-					i--
-				}
-			}
+			presenceIDs = r.presenceList.FilterPresenceIDs(presenceIDs)
 			if len(presenceIDs) == 0 {
 				// None of the target presenceIDs existed in the list of match members.
 				return nil, nil, nil
@@ -378,7 +375,7 @@ func (r *RuntimeGoMatchCore) MatchLabelUpdate(label string) error {
 	if r.stopped.Load() {
 		return ErrMatchStopped
 	}
-	if err := r.matchRegistry.UpdateMatchLabel(r.id, r.tickRate, r.module, label); err != nil {
+	if err := r.matchRegistry.UpdateMatchLabel(r.id, r.tickRate, r.module, label, r.createTime); err != nil {
 		return fmt.Errorf("error updating match label: %v", err.Error())
 	}
 	r.label.Store(label)

@@ -16,10 +16,11 @@ package server
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/gofrs/uuid"
 	"github.com/heroiclabs/nakama-common/rtapi"
 	"go.uber.org/zap"
-	"strings"
 )
 
 func (p *Pipeline) partyCreate(logger *zap.Logger, session Session, envelope *rtapi.Envelope) {
@@ -45,7 +46,7 @@ func (p *Pipeline) partyCreate(logger *zap.Logger, session Session, envelope *rt
 	}
 
 	// If successful, the creator becomes the first user to join the party.
-	success, _ := p.tracker.Track(session.ID(), ph.Stream, session.UserID(), PresenceMeta{
+	success, _ := p.tracker.Track(session.Context(), session.ID(), ph.Stream, session.UserID(), PresenceMeta{
 		Format:   session.Format(),
 		Username: session.Username(),
 		Status:   "",
@@ -106,7 +107,7 @@ func (p *Pipeline) partyJoin(logger *zap.Logger, session Session, envelope *rtap
 
 	// If the party was open and the join was successful, track the new member immediately.
 	if autoJoin {
-		success, _ := p.tracker.Track(session.ID(), PresenceStream{Mode: StreamModeParty, Subject: partyID, Label: node}, session.UserID(), PresenceMeta{
+		success, _ := p.tracker.Track(session.Context(), session.ID(), PresenceStream{Mode: StreamModeParty, Subject: partyID, Label: node}, session.UserID(), PresenceMeta{
 			Format:   session.Format(),
 			Username: session.Username(),
 			Status:   "",

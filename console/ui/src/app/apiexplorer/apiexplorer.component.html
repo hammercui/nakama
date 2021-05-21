@@ -1,7 +1,7 @@
 <h2 class="pb-4">API Explorer</h2>
 
 <ngb-alert [dismissible]="false" type="danger" class="mb-3" *ngIf="error">
-  <img src="/assets/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
+  <img src="/static/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
   <h6 class="mr-2 d-inline font-weight-bold">Error whilst making RPC call: {{error}}</h6>
 </ngb-alert>
 
@@ -20,7 +20,7 @@
           </div>
           <input type="text" class="form-control border-right-0" formControlName="user_id" placeholder="set user ID as request context"/>
           <div class="input-group-append">
-            <button class="btn btn-primary" type="submit" [disabled]="f.method.invalid" (click)="sendRequest()">Send Request</button>
+            <button class="btn btn-primary" type="submit" [disabled]="f.method.invalid">Send Request</button>
           </div>
         </div>
       </form>

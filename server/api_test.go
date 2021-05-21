@@ -24,6 +24,7 @@ import (
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/rtapi"
+	"github.com/heroiclabs/nakama-common/runtime"
 	"github.com/heroiclabs/nakama/v3/apigrpc"
 	_ "github.com/jackc/pgx/stdlib"
 	"go.uber.org/zap"
@@ -108,7 +109,7 @@ func (d *DummySession) SendBytes(payload []byte, reliable bool) error {
 	return nil
 }
 
-func (d *DummySession) Close(reason string) {}
+func (d *DummySession) Close(msg string, reason runtime.PresenceReason) {}
 
 type loggerEnabler struct{}
 
@@ -166,8 +167,8 @@ func NewAPIServer(t *testing.T, runtime *Runtime) (*ApiServer, *Pipeline) {
 	db := NewDB(t)
 	router := &DummyMessageRouter{}
 	tracker := &LocalTracker{}
-	pipeline := NewPipeline(logger, cfg, db, jsonpbMarshaler, jsonpbUnmarshaler, nil, nil, nil, tracker, router, runtime)
-	apiServer := StartApiServer(logger, logger, db, jsonpbMarshaler, jsonpbUnmarshaler, cfg, nil, nil, nil, nil, nil, nil, tracker, router, metrics, pipeline, runtime)
+	pipeline := NewPipeline(logger, cfg, db, jsonpbMarshaler, jsonpbUnmarshaler, nil, nil, nil, nil, nil, tracker, router, runtime)
+	apiServer := StartApiServer(logger, logger, db, jsonpbMarshaler, jsonpbUnmarshaler, cfg, nil, nil, nil, nil, nil, nil, nil, nil, tracker, router, metrics, pipeline, runtime)
 	return apiServer, pipeline
 }
 

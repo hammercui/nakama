@@ -1,7 +1,7 @@
 <h2 class="pb-4">Runtime Modules</h2>
 
 <ngb-alert [dismissible]="false" type="danger" *ngIf="error">
-  <img src="/assets/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
+  <img src="/static/svg/red-triangle.svg" alt="" width="16" height="" class="mr-2">
   <h6 class="mr-2 d-inline font-weight-bold">Failed to retrieve runtime information: {{error}}</h6>
 </ngb-alert>
 
@@ -13,21 +13,21 @@
     </tr>
   </thead>
   <tbody>
-    <tr *ngFor="let m of runtimeInfo.go_modules"><td>{{m.path}}</td><td>{{m.mod_time}}</td></tr>
+    <tr *ngFor="let m of runtimeInfo.go_modules"><td>{{m.path}}</td><td style="width: 200px">{{m.mod_time}}</td></tr>
     <tr *ngIf="runtimeInfo.go_modules.length === 0"><td class="text-muted">No Go modules were found.</td><td></td></tr>
   </tbody>
   <thead class="thead-light">
     <tr><th colspan="2">Lua Modules</th></tr>
   </thead>
   <tbody>
-    <tr *ngFor="let m of runtimeInfo.lua_modules"><td>{{m.path}}</td><td>{{m.mod_time}}</td></tr>
+    <tr *ngFor="let m of runtimeInfo.lua_modules"><td>{{m.path}}</td><td style="width: 200px">{{m.mod_time}}</td></tr>
     <tr *ngIf="runtimeInfo.lua_modules.length === 0"><td class="text-muted">No Lua modules were found.</td><td></td></tr>
   </tbody>
   <thead class="thead-light">
     <tr><th colspan="2">JavaScript Modules</th></tr>
   </thead>
   <tbody>
-    <tr *ngFor="let m of runtimeInfo.js_modules"><td>{{m.path}}</td><td>{{m.mod_time}}</td></tr>
+    <tr *ngFor="let m of runtimeInfo.js_modules"><td>{{m.path}}</td><td style="width: 200px">{{m.mod_time}}</td></tr>
     <tr *ngIf="runtimeInfo.js_modules.length === 0"><td class="text-muted">No JavaScript modules were found.</td><td></td></tr>
   </tbody>
 </table>

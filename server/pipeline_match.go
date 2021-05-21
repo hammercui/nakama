@@ -15,10 +15,9 @@
 package server
 
 import (
+	"crypto"
 	"fmt"
 	"strings"
-
-	"crypto"
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
@@ -38,7 +37,7 @@ func (p *Pipeline) matchCreate(logger *zap.Logger, session Session, envelope *rt
 
 	username := session.Username()
 
-	if success, _ := p.tracker.Track(session.ID(), PresenceStream{Mode: StreamModeMatchRelayed, Subject: matchID}, session.UserID(), PresenceMeta{
+	if success, _ := p.tracker.Track(session.Context(), session.ID(), PresenceStream{Mode: StreamModeMatchRelayed, Subject: matchID}, session.UserID(), PresenceMeta{
 		Username: username,
 		Format:   session.Format(),
 	}, false); !success {
@@ -168,7 +167,7 @@ func (p *Pipeline) matchJoin(logger *zap.Logger, session Session, envelope *rtap
 				Username: username,
 				Format:   session.Format(),
 			}
-			if success, _ := p.tracker.Track(session.ID(), stream, session.UserID(), m, false); !success {
+			if success, _ := p.tracker.Track(session.Context(), session.ID(), stream, session.UserID(), m, false); !success {
 				// Presence creation was rejected due to `allowIfFirstForSession` flag, session is gone so no need to reply.
 				return
 			}
@@ -221,7 +220,7 @@ func (p *Pipeline) matchJoin(logger *zap.Logger, session Session, envelope *rtap
 				Username: session.Username(),
 				Format:   session.Format(),
 			}
-			p.tracker.Track(session.ID(), stream, session.UserID(), m, false)
+			p.tracker.Track(session.Context(), session.ID(), stream, session.UserID(), m, false)
 		}
 
 		label = &wrappers.StringValue{Value: l}

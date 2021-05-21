@@ -112,37 +112,43 @@ func DeleteUser(ctx context.Context, tx *sql.Tx, userID uuid.UUID) (int64, error
 	return res.RowsAffected()
 }
 
-func BanUsers(ctx context.Context, logger *zap.Logger, db *sql.DB, ids []string) error {
+func BanUsers(ctx context.Context, logger *zap.Logger, db *sql.DB, sessionCache SessionCache, ids []uuid.UUID) error {
 	statements := make([]string, 0, len(ids))
 	params := make([]interface{}, 0, len(ids))
 	for i, id := range ids {
 		statements = append(statements, "$"+strconv.Itoa(i+1))
-		params = append(params, id)
+		params = append(params, id.String())
 	}
 
 	query := "UPDATE users SET disable_time = now() WHERE id IN (" + strings.Join(statements, ", ") + ")"
 	_, err := db.ExecContext(ctx, query, params...)
 	if err != nil {
-		logger.Error("Error banning user accounts.", zap.Error(err), zap.Strings("ids", ids))
+		logger.Error("Error banning user accounts.", zap.Error(err), zap.Any("ids", params))
 		return err
 	}
+
+	sessionCache.Ban(ids)
+
 	return nil
 }
 
-func UnbanUsers(ctx context.Context, logger *zap.Logger, db *sql.DB, ids []string) error {
+func UnbanUsers(ctx context.Context, logger *zap.Logger, db *sql.DB, sessionCache SessionCache, ids []uuid.UUID) error {
 	statements := make([]string, 0, len(ids))
 	params := make([]interface{}, 0, len(ids))
 	for i, id := range ids {
 		statements = append(statements, "$"+strconv.Itoa(i+1))
-		params = append(params, id)
+		params = append(params, id.String())
 	}
 
 	query := "UPDATE users SET disable_time = '1970-01-01 00:00:00 UTC' WHERE id IN (" + strings.Join(statements, ", ") + ")"
 	_, err := db.ExecContext(ctx, query, params...)
 	if err != nil {
-		logger.Error("Error unbanning user accounts.", zap.Error(err), zap.Strings("ids", ids))
+		logger.Error("Error unbanning user accounts.", zap.Error(err), zap.Any("ids", params))
 		return err
 	}
+
+	sessionCache.Unban(ids)
+
 	return nil
 }
 
@@ -203,12 +209,12 @@ func convertUser(tracker Tracker, rows *sql.Rows) (*api.User, error) {
 		EdgeCount:             int32(edgeCount),
 		CreateTime:            &timestamp.Timestamp{Seconds: createTime.Time.Unix()},
 		UpdateTime:            &timestamp.Timestamp{Seconds: updateTime.Time.Unix()},
-		Online:                tracker.StreamExists(PresenceStream{Mode: StreamModeNotifications, Subject: userID}),
+		Online:                tracker.StreamExists(PresenceStream{Mode: StreamModeStatus, Subject: userID}),
 	}, nil
 }
 
 func fetchUserID(ctx context.Context, db *sql.DB, usernames []string) ([]string, error) {
-	ids := make([]string, 0)
+	ids := make([]string, 0, len(usernames))
 	if len(usernames) == 0 {
 		return ids, nil
 	}

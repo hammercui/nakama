@@ -27,7 +27,7 @@ ng serve
 
 ### 2 启动服务
 ```
-go run main.go --database.address "go_admin:111111@192.168.3.22:26257/mahjong"
+go run main.go --database.address "go_admin:111111@192.168.2.20:26257/mahjong"
 
 ```
 

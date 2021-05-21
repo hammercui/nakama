@@ -16,11 +16,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"github.com/heroiclabs/nakama-common/runtime"
 	"time"
 
 	"github.com/gofrs/uuid"
-	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"go.uber.org/zap"
 )
@@ -68,6 +69,9 @@ func (m *MatchDataMessage) GetReliable() bool {
 }
 func (m *MatchDataMessage) GetReceiveTime() int64 {
 	return m.ReceiveTime
+}
+func (m *MatchDataMessage) GetReason() runtime.PresenceReason {
+	return runtime.PresenceReasonUnknown
 }
 
 type MatchHandler struct {
@@ -199,9 +203,9 @@ func NewMatchHandler(logger *zap.Logger, config Config, sessionRegistry SessionR
 
 // Disconnect all clients currently connected to the server.
 func (mh *MatchHandler) disconnectClients() {
-	presenceIDs := mh.PresenceList.ListPresenceIDs()
-	for _, presenceID := range presenceIDs {
-		_ = mh.sessionRegistry.Disconnect(context.Background(), presenceID.SessionID)
+	presences := mh.PresenceList.ListPresences()
+	for _, presence := range presences {
+		_ = mh.sessionRegistry.Disconnect(context.Background(), presence.SessionID)
 	}
 }
 
@@ -224,6 +228,18 @@ func (mh *MatchHandler) Stop() {
 
 func (mh *MatchHandler) Label() string {
 	return mh.Core.Label()
+}
+
+func (mh *MatchHandler) TickRate() int {
+	return mh.Core.TickRate()
+}
+
+func (mh *MatchHandler) HandlerName() string {
+	return mh.Core.HandlerName()
+}
+
+func (mh *MatchHandler) CreateTime() int64 {
+	return mh.Core.CreateTime()
 }
 
 func (mh *MatchHandler) queueCall(f func(*MatchHandler)) bool {

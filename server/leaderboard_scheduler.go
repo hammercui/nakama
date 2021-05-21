@@ -185,11 +185,11 @@ func (ls *LocalLeaderboardScheduler) Update() {
 	earliestEndActive := int64(-1)
 	earliestExpiry := int64(-1)
 
-	endActiveLeaderboardIds := make([]string, 0)
-	expiryLeaderboardIds := make([]string, 0)
+	endActiveLeaderboardIds := make([]string, 0, 1)
+	expiryLeaderboardIds := make([]string, 0, 1)
 
 	for _, l := range leaderboards {
-		if l.Duration > 0 {
+		if l.IsTournament() {
 			// Tournament.
 			_, endActive, expiry := calculateTournamentDeadlines(l.StartTime, l.EndTime, int64(l.Duration), l.ResetSchedule, now)
 

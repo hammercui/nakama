@@ -88,11 +88,8 @@ export class ConsoleService {
   }
 
   public deleteLeaderboardRecord(auth_token: string, id: string, owner_id: string): Observable<any> {
-    const urlPath = `/v2/console/leaderboard/${id}`;
+    const urlPath = `/v2/console/leaderboard/${id}/owner/${owner_id}`;
     let params = new HttpParams();
-    if (owner_id) {
-      params = params.set('owner_id', owner_id);
-    }
     return this.httpClient.delete(this.config.host + urlPath, { params: params, headers: this.getTokenAuthHeaders(auth_token) })
   }
 
@@ -259,6 +256,21 @@ export class ConsoleService {
       params = params.set('query', query);
     }
     return this.httpClient.get<ApiMatchList>(this.config.host + urlPath, { params: params, headers: this.getTokenAuthHeaders(auth_token) })
+  }
+
+  public listPurchases(auth_token: string, user_id: string, limit: number, cursor: string): Observable<ApiPurchaseList> {
+    const urlPath = `/v2/console/purchase`;
+    let params = new HttpParams();
+    if (user_id) {
+      params = params.set('user_id', user_id);
+    }
+    if (limit) {
+      params = params.set('limit', String(limit));
+    }
+    if (cursor) {
+      params = params.set('cursor', cursor);
+    }
+    return this.httpClient.get<ApiPurchaseList>(this.config.host + urlPath, { params: params, headers: this.getTokenAuthHeaders(auth_token) })
   }
 
   public listStorage(auth_token: string, user_id: string, key: string, collection: string, cursor: string): Observable<StorageList> {
@@ -496,6 +508,11 @@ export interface ApiNotification {
   persistent?: boolean
 }
 
+export interface ApiPurchaseList {
+  validated_purchases?: ApiValidatedPurchase[]
+  cursor?: string
+}
+
 export interface ApiReadStorageObjectId {
   collection?: string
   key?: string
@@ -552,6 +569,17 @@ export interface UserGroupListUserGroup {
   state?: number
 }
 
+export interface ApiValidatedPurchase {
+  product_id?: string
+  transaction_id?: string
+  store?: ValidatedPurchaseStore
+  purchase_time?: string
+  create_time?: string
+  update_time?: string
+  provider_response?: string
+  environment?: ValidatedPurchaseEnvironment
+}
+
 export interface Account {
   account?: ApiAccount
   disable_time?: string
@@ -588,6 +616,7 @@ export interface AddUserRequest {
   password?: string
   email?: string
   role?: UserRole
+  newsletter_subscription?: boolean
 }
 
 export interface ApiEndpointDescriptor {
@@ -692,6 +721,12 @@ export interface LeaderboardRequest {
 export interface ListAccountsRequest {
   filter?: string
   tombstones?: boolean
+  cursor?: string
+}
+
+export interface ListPurchasesRequest {
+  user_id?: string
+  limit?: number
   cursor?: string
 }
 
@@ -818,6 +853,18 @@ export interface RealtimeUserPresence {
   username?: string
   persistence?: boolean
   status?: string
+}
+
+export enum ValidatedPurchaseEnvironment {
+  UNKNOWN = 0,
+  SANDBOX = 1,
+  PRODUCTION = 2,
+}
+
+export enum ValidatedPurchaseStore {
+  APPLE_APP_STORE = 0,
+  GOOGLE_PLAY_STORE = 1,
+  HUAWEI_APP_GALLERY = 2,
 }
 
 export enum UserRole {
